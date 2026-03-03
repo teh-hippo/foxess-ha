@@ -80,6 +80,7 @@ CONF_XTZONE = "xtZone"
 CONF_GET_VARIABLES = "Restrict"
 CONF_V1_API = "Use_V1_Api"
 CONF_EVO = "Evo"
+CONF_HAS_BATTERY = "hasBattery"
 RETRY_NEXT_SLOT = -1
 RETRY_IN_5_MINS = 25
 DNS_ERROR = 101
@@ -103,6 +104,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_GET_VARIABLES): cv.boolean,
         vol.Optional(CONF_V1_API): cv.boolean,
         vol.Optional(CONF_EVO): cv.boolean,
+        vol.Optional(CONF_HAS_BATTERY): cv.boolean,
     }
 )
 
@@ -122,6 +124,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     RestrictGetVar = config.get(CONF_GET_VARIABLES)
     V1_Api = config.get(CONF_V1_API)
     Evo = config.get(CONF_EVO)
+    hasBatteryOverride = config.get(CONF_HAS_BATTERY)
     _LOGGER.debug("API Key: %s", apiKey)
     _LOGGER.debug("Device SN: %s", devicesn)
     _LOGGER.debug("Device ID: %s", deviceID)
@@ -247,7 +250,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
                 if not allData["online"]:
                     if not geterror:
-                        _LOGGER.warning("%s Inverter is off-line, waiting to retry", name)
+                        hasBat = allData["addressbook"].get("hasBattery", True)
+                        if not hasBat:
+                            _LOGGER.debug("%s Inverter off-line, no battery fitted", name)
+                        else:
+                            _LOGGER.warning("%s Inverter is off-line, waiting to retry", name)
                     else:
                         _LOGGER.warning("%s Cloud timeout, retry in 1 minute", name)
             else:
@@ -292,6 +299,12 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             "FoxESS Cloud initialisation failed, Fatal Error - correct error and restart Home Assistant"
         )
         return False
+
+    if hasBatteryOverride is not None:
+        hasBattery = hasBatteryOverride
+    else:
+        hasBattery = allData["addressbook"].get("hasBattery", True)
+    _LOGGER.debug("hasBattery: %s (override: %s)", hasBattery, hasBatteryOverride)
 
     async_add_entities(
         [
@@ -370,22 +383,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 coordinator,
                 name,
                 deviceID,
-                "Bat Temperature",
-                "bat-temperature",
-                "batTemperature",
-            ),
-            FoxESSTemp(
-                coordinator,
-                name,
-                deviceID,
-                "Bat Temperature2",
-                "bat-temperature2",
-                "batTemperature_2",
-            ),
-            FoxESSTemp(
-                coordinator,
-                name,
-                deviceID,
                 "Ambient Temperature",
                 "ambient-temperature",
                 "ambientTemperation",
@@ -406,30 +403,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 "inv-temperature",
                 "invTemperation",
             ),
-            FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC", "bat-soc", "SoC"),
-            FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC1", "bat-soc1", "SoC_1"),
-            FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC2", "bat-soc2", "SoC_2"),
-            FoxESSBatSoC(coordinator, name, deviceID, "Bat SoH", "bat-soh", "SOH"),
-            FoxESSPower(
-                coordinator,
-                name,
-                deviceID,
-                "Inverter Bat Power",
-                "inv-Bat-Power",
-                "invBatPower",
-            ),
-            FoxESSPower(
-                coordinator,
-                name,
-                deviceID,
-                "Inverter Bat Power2",
-                "inv-Bat-Power2",
-                "invBatPower_2",
-            ),
-            FoxESSBatMinSoC(coordinator, name, deviceID),
-            FoxESSBatMinSoConGrid(coordinator, name, deviceID),
             FoxESSSolarPower(coordinator, name, deviceID),
-            FoxESSEnergyThroughput(coordinator, name, deviceID),
             FoxESSEnergySolar(coordinator, name, deviceID),
             FoxESSInverter(coordinator, name, deviceID),
             FoxESSPowerString(
@@ -455,22 +429,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 "FeedIn Power",
                 "feedIn-power",
                 "feedinPower",
-            ),
-            FoxESSPowerString(
-                coordinator,
-                name,
-                deviceID,
-                "Bat Discharge Power",
-                "bat-discharge-power",
-                "batDischargePower",
-            ),
-            FoxESSPowerString(
-                coordinator,
-                name,
-                deviceID,
-                "Bat Charge Power",
-                "bat-charge-power",
-                "batChargePower",
             ),
             FoxESSPowerString(
                 coordinator, name, deviceID, "Load Power", "load-power", "loadsPower"
@@ -501,14 +459,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             ),
             FoxESSEnergyGridConsumption(coordinator, name, deviceID),
             FoxESSEnergyFeedin(coordinator, name, deviceID),
-            FoxESSEnergyBatCharge(coordinator, name, deviceID),
-            FoxESSEnergyBatDischarge(coordinator, name, deviceID),
             FoxESSEnergyLoad(coordinator, name, deviceID),
             FoxESSPVEnergyTotal(coordinator, name, deviceID),
-            FoxESSResidualEnergy(coordinator, name, deviceID),
             FoxESSResponseTime(coordinator, name, deviceID),
-            FoxESSMaxBatChargeCurrent(coordinator, name, deviceID),
-            FoxESSMaxBatDischargeCurrent(coordinator, name, deviceID),
             FoxESSRunningState(
                 coordinator,
                 name,
@@ -519,6 +472,72 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             ),
         ]
     )
+
+    if hasBattery:
+        async_add_entities(
+            [
+                FoxESSTemp(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Bat Temperature",
+                    "bat-temperature",
+                    "batTemperature",
+                ),
+                FoxESSTemp(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Bat Temperature2",
+                    "bat-temperature2",
+                    "batTemperature_2",
+                ),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC", "bat-soc", "SoC"),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC1", "bat-soc1", "SoC_1"),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC2", "bat-soc2", "SoC_2"),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoH", "bat-soh", "SOH"),
+                FoxESSPower(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Inverter Bat Power",
+                    "inv-Bat-Power",
+                    "invBatPower",
+                ),
+                FoxESSPower(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Inverter Bat Power2",
+                    "inv-Bat-Power2",
+                    "invBatPower_2",
+                ),
+                FoxESSBatMinSoC(coordinator, name, deviceID),
+                FoxESSBatMinSoConGrid(coordinator, name, deviceID),
+                FoxESSEnergyThroughput(coordinator, name, deviceID),
+                FoxESSPowerString(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Bat Discharge Power",
+                    "bat-discharge-power",
+                    "batDischargePower",
+                ),
+                FoxESSPowerString(
+                    coordinator,
+                    name,
+                    deviceID,
+                    "Bat Charge Power",
+                    "bat-charge-power",
+                    "batChargePower",
+                ),
+                FoxESSEnergyBatCharge(coordinator, name, deviceID),
+                FoxESSEnergyBatDischarge(coordinator, name, deviceID),
+                FoxESSResidualEnergy(coordinator, name, deviceID),
+                FoxESSMaxBatChargeCurrent(coordinator, name, deviceID),
+                FoxESSMaxBatDischargeCurrent(coordinator, name, deviceID),
+            ]
+        )
 
     if ExtPV:
         async_add_entities(
