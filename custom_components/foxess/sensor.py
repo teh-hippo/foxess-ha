@@ -43,6 +43,19 @@ from homeassistant.util.ssl import SSLCipherList
 from homeassistant.helpers.icon import icon_for_battery_level
 import homeassistant.helpers.config_validation as cv
 
+from .const import (
+    CONF_APIKEY,
+    CONF_DEVICESN,
+    CONF_DEVICEID,
+    CONF_EXTPV,
+    CONF_XTZONE,
+    CONF_GET_VARIABLES,
+    CONF_V1_API,
+    CONF_EVO,
+    CONF_HAS_BATTERY,
+    DEFAULT_NAME,
+)
+
 _LOGGER = logging.getLogger(__name__)
 _ENDPOINT_OA_DOMAIN = "https://www.foxesscloud.com"
 _ENDPOINT_OA_BATTERY_SETTINGS = "/op/v0/device/battery/soc/get?sn="
@@ -71,21 +84,11 @@ ATTR_LASTCLOUDSYNC = "lastCloudSync"
 
 BATTERY_LEVELS = {"High": 80, "Medium": 50, "Low": 25, "Empty": 10}
 
-CONF_APIKEY = "apiKey"
-CONF_DEVICESN = "deviceSN"
-CONF_DEVICEID = "deviceID"
 CONF_SYSTEM_ID = "system_id"
-CONF_EXTPV = "extendPV"
-CONF_XTZONE = "xtZone"
-CONF_GET_VARIABLES = "Restrict"
-CONF_V1_API = "Use_V1_Api"
-CONF_EVO = "Evo"
-CONF_HAS_BATTERY = "hasBattery"
 RETRY_NEXT_SLOT = -1
 RETRY_IN_5_MINS = 25
 DNS_ERROR = 101
 
-DEFAULT_NAME = "FoxESS"
 DEFAULT_VERIFY_SSL = False  # True
 
 SCAN_MINUTES = 1  # number of minutes betwen API requests
@@ -712,6 +715,23 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 ),
             ]
         )
+
+
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up FoxESS sensor from a config entry."""
+    config = {
+        CONF_NAME: entry.data.get(CONF_NAME, DEFAULT_NAME),
+        CONF_DEVICEID: entry.data[CONF_DEVICEID],
+        CONF_DEVICESN: entry.data[CONF_DEVICESN],
+        CONF_APIKEY: entry.data[CONF_APIKEY],
+        CONF_HAS_BATTERY: entry.data.get(CONF_HAS_BATTERY),
+        CONF_EXTPV: entry.options.get(CONF_EXTPV, False),
+        CONF_EVO: entry.options.get(CONF_EVO, False),
+        CONF_XTZONE: False,
+        CONF_GET_VARIABLES: False,
+        CONF_V1_API: True,
+    }
+    await async_setup_platform(hass, config, async_add_entities)
 
 
 class GetAuth:
