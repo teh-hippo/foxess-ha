@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "FoxESS Cloud",
+        "description": "Enter your FoxESS OpenAPI key and device serial number.",
+        "data": {
+          "apiKey": "API Key",
+          "deviceSN": "Device Serial Number",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to FoxESS Cloud.",
+      "invalid_auth": "Invalid API key.",
+      "device_not_found": "Device not found. Check serial number.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "yaml_in_use": "This integration is configured via YAML. Remove the sensor platform entry from configuration.yaml first."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "extendPV": "More than 6 PV strings",
+          "Evo": "Evo series inverter"
+        }
+      }
+    }
+  }
+}
