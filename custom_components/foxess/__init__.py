@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 PLATFORMS = ["sensor"]
 
 
