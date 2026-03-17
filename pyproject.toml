@@ -1,0 +1,12 @@
+[project]
+name = "foxess-ha"
+version = "1.0.0"
+description = "Home Assistant FoxESS Cloud integration (fork with solar-only + config flow)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+]
