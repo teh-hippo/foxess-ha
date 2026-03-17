@@ -1,58 +1,55 @@
 from __future__ import annotations
 
-from collections import namedtuple
-from datetime import timedelta
-from datetime import datetime
-from dateutil import parser
-import time
-import logging
-import json
-import hashlib
 import asyncio
-import voluptuous as vol
+import hashlib
+import json
+import logging
+import time
+from collections import namedtuple
+from datetime import datetime, timedelta
 
+import homeassistant.helpers.config_validation as cv
+import voluptuous as vol
+from dateutil import parser
 from homeassistant.components.rest.data import RestData
 from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorStateClass,
     PLATFORM_SCHEMA,
+    SensorDeviceClass,
     SensorEntity,
+    SensorStateClass,
 )
-
-
 from homeassistant.const import (
     ATTR_DATE,
     ATTR_TIME,
+    CONF_NAME,
     CONF_PASSWORD,
     CONF_USERNAME,
-    CONF_NAME,
-    UnitOfPower,
-    UnitOfTemperature,
-    UnitOfEnergy,
-    UnitOfElectricPotential,
-    UnitOfElectricCurrent,
-    UnitOfFrequency,
-    UnitOfReactivePower,
     PERCENTAGE,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfReactivePower,
+    UnitOfTemperature,
 )
+from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
 )
 from homeassistant.util.ssl import SSLCipherList
-from homeassistant.helpers.icon import icon_for_battery_level
-import homeassistant.helpers.config_validation as cv
 
 from .const import (
     CONF_APIKEY,
-    CONF_DEVICESN,
     CONF_DEVICEID,
-    CONF_EXTPV,
-    CONF_XTZONE,
-    CONF_GET_VARIABLES,
-    CONF_V1_API,
+    CONF_DEVICESN,
     CONF_EVO,
+    CONF_EXTPV,
+    CONF_GET_VARIABLES,
     CONF_HAS_BATTERY,
+    CONF_V1_API,
+    CONF_XTZONE,
     DEFAULT_NAME,
 )
 
@@ -69,7 +66,9 @@ _ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation?sn="
 METHOD_POST = "POST"
 METHOD_GET = "GET"
 DEFAULT_ENCODING = "UTF-8"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 DEFAULT_TIMEOUT = 75  # increase the size of inherited timeout, the API is a bit slow
 
 ATTR_DEVICE_SN = "deviceSN"
@@ -210,9 +209,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                                 if tslice == 0:
                                     # get daily generation at startup, then every 60 minutes
                                     await asyncio.sleep(1)  # OpenAPI demand
-                                    geterror = await getReportDailyGeneration(
-                                        hass, allData, apiKey, devicesn
-                                    )
+                                    geterror = await getReportDailyGeneration(hass, allData, apiKey, devicesn)
                                     if geterror:
                                         _LOGGER.debug("getReportDailyGeneration False")
                             else:
@@ -233,9 +230,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                             tslice = RETRY_IN_5_MINS  # retry in 5 minutes
                         else:
                             if geterror == DNS_ERROR:
-                                _LOGGER.warning(
-                                    "Fox Cloud - DNS fail, retry in 1 minute"
-                                )
+                                _LOGGER.warning("Fox Cloud - DNS fail, retry in 1 minute")
                                 # retry in 1 minute
                                 if tslice != 0:
                                     tslice = tslice - 1
@@ -243,9 +238,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                                     tslice = RETRY_NEXT_SLOT
                             else:
                                 # The get variables api call failed, leave it 5 minutes
-                                _LOGGER.debug(
-                                    "slowing retry response for SN: %s", devicesn
-                                )
+                                _LOGGER.debug("slowing retry response for SN: %s", devicesn)
                                 allData["online"] = False
                                 tslice = RETRY_IN_5_MINS  # retry in 5 minutes
                         geterror = False
@@ -261,19 +254,13 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     if not geterror:
                         hasBat = allData["addressbook"].get("hasBattery", True)
                         if not hasBat:
-                            _LOGGER.debug(
-                                "%s Inverter off-line, no battery fitted", name
-                            )
+                            _LOGGER.debug("%s Inverter off-line, no battery fitted", name)
                         else:
-                            _LOGGER.warning(
-                                "%s Inverter is off-line, waiting to retry", name
-                            )
+                            _LOGGER.warning("%s Inverter is off-line, waiting to retry", name)
                     else:
                         _LOGGER.warning("%s Cloud timeout, retry in 1 minute", name)
             else:
-                _LOGGER.warning(
-                    "%s Cloud timeout on Device Detail, retry in 1 minute.", name
-                )
+                _LOGGER.warning("%s Cloud timeout on Device Detail, retry in 1 minute.", name)
 
             if geterror is not False:
                 allData["online"] = False
@@ -310,9 +297,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     await coordinator.async_refresh()
 
     if not coordinator.last_update_success:
-        _LOGGER.error(
-            "FoxESS Cloud initialisation failed, Fatal Error - correct error and restart Home Assistant"
-        )
+        _LOGGER.error("FoxESS Cloud initialisation failed, Fatal Error - correct error and restart Home Assistant")
         return False
 
     if hasBatteryOverride is not None:
@@ -323,52 +308,26 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     async_add_entities(
         [
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV1 Current", "pv1-current", "pv1Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV1 Power", "pv1-power", "pv1Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV1 Current", "pv1-current", "pv1Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV1 Power", "pv1-power", "pv1Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV1 Volt", "pv1-volt", "pv1Volt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV2 Current", "pv2-current", "pv2Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV2 Power", "pv2-power", "pv2Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV2 Current", "pv2-current", "pv2Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV2 Power", "pv2-power", "pv2Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV2 Volt", "pv2-volt", "pv2Volt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV3 Current", "pv3-current", "pv3Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV3 Power", "pv3-power", "pv3Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV3 Current", "pv3-current", "pv3Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV3 Power", "pv3-power", "pv3Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV3 Volt", "pv3-volt", "pv3Volt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV4 Current", "pv4-current", "pv4Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV4 Power", "pv4-power", "pv4Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV4 Current", "pv4-current", "pv4Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV4 Power", "pv4-power", "pv4Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV4 Volt", "pv4-volt", "pv4Volt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV5 Current", "pv5-current", "pv5Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV5 Power", "pv5-power", "pv5Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV5 Current", "pv5-current", "pv5Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV5 Power", "pv5-power", "pv5Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV5 Volt", "pv5-volt", "pv5Volt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "PV6 Current", "pv6-current", "pv6Current"
-            ),
-            FoxESSPower(
-                coordinator, name, deviceID, "PV6 Power", "pv6-power", "pv6Power"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "PV6 Current", "pv6-current", "pv6Current"),
+            FoxESSPower(coordinator, name, deviceID, "PV6 Power", "pv6-power", "pv6Power"),
             FoxESSVolt(coordinator, name, deviceID, "PV6 Volt", "pv6-volt", "pv6Volt"),
             FoxESSPower(coordinator, name, deviceID, "PV Power", "pv-power", "pvPower"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "R Current", "r-current", "RCurrent"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "R Current", "r-current", "RCurrent"),
             FoxESSFreq(coordinator, name, deviceID, "R Freq", "r-freq", "RFreq"),
             FoxESSPower(coordinator, name, deviceID, "R Power", "r-power", "RPower"),
             FoxESSPowerString(
@@ -380,15 +339,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 "meterPower2",
             ),
             FoxESSVolt(coordinator, name, deviceID, "R Volt", "r-volt", "RVolt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "S Current", "s-current", "SCurrent"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "S Current", "s-current", "SCurrent"),
             FoxESSFreq(coordinator, name, deviceID, "S Freq", "s-freq", "SFreq"),
             FoxESSPower(coordinator, name, deviceID, "S Power", "s-power", "SPower"),
             FoxESSVolt(coordinator, name, deviceID, "S Volt", "s-volt", "SVolt"),
-            FoxESSCurrent(
-                coordinator, name, deviceID, "T Current", "t-current", "TCurrent"
-            ),
+            FoxESSCurrent(coordinator, name, deviceID, "T Current", "t-current", "TCurrent"),
             FoxESSFreq(coordinator, name, deviceID, "T Freq", "t-freq", "TFreq"),
             FoxESSPower(coordinator, name, deviceID, "T Power", "t-power", "TPower"),
             FoxESSVolt(coordinator, name, deviceID, "T Volt", "t-volt", "TVolt"),
@@ -445,9 +400,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 "feedIn-power",
                 "feedinPower",
             ),
-            FoxESSPowerString(
-                coordinator, name, deviceID, "Load Power", "load-power", "loadsPower"
-            ),
+            FoxESSPowerString(coordinator, name, deviceID, "Load Power", "load-power", "loadsPower"),
             FoxESSEnergyGenerated(
                 coordinator,
                 name,
@@ -508,12 +461,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "batTemperature_2",
                 ),
                 FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC", "bat-soc", "SoC"),
-                FoxESSBatSoC(
-                    coordinator, name, deviceID, "Bat SoC1", "bat-soc1", "SoC_1"
-                ),
-                FoxESSBatSoC(
-                    coordinator, name, deviceID, "Bat SoC2", "bat-soc2", "SoC_2"
-                ),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC1", "bat-soc1", "SoC_1"),
+                FoxESSBatSoC(coordinator, name, deviceID, "Bat SoC2", "bat-soc2", "SoC_2"),
                 FoxESSBatSoC(coordinator, name, deviceID, "Bat SoH", "bat-soh", "SOH"),
                 FoxESSPower(
                     coordinator,
@@ -569,12 +518,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv7-current",
                     "pv7Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV7 Power", "pv7-power", "pv7Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV7 Volt", "pv7-volt", "pv7Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV7 Power", "pv7-power", "pv7Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV7 Volt", "pv7-volt", "pv7Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -583,12 +528,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv8-current",
                     "pv8Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV8 Power", "pv8-power", "pv8Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV8 Volt", "pv8-volt", "pv8Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV8 Power", "pv8-power", "pv8Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV8 Volt", "pv8-volt", "pv8Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -597,12 +538,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv9-current",
                     "pv9Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV9 Power", "pv9-power", "pv9Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV9 Volt", "pv9-volt", "pv9Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV9 Power", "pv9-power", "pv9Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV9 Volt", "pv9-volt", "pv9Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -611,12 +548,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv10-current",
                     "pv10Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV10 Power", "pv10-power", "pv10Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV10 Volt", "pv10-volt", "pv10Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV10 Power", "pv10-power", "pv10Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV10 Volt", "pv10-volt", "pv10Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -625,12 +558,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv11-current",
                     "pv11Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV11 Power", "pv11-power", "pv11Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV11 Volt", "pv11-volt", "pv11Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV11 Power", "pv11-power", "pv11Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV11 Volt", "pv11-volt", "pv11Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -639,12 +568,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv12-current",
                     "pv12Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV12 Power", "pv12-power", "pv12Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV12 Volt", "pv12-volt", "pv12Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV12 Power", "pv12-power", "pv12Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV12 Volt", "pv12-volt", "pv12Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -653,12 +578,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv13-current",
                     "pv13Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV13 Power", "pv13-power", "pv13Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV13 Volt", "pv13-volt", "pv13Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV13 Power", "pv13-power", "pv13Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV13 Volt", "pv13-volt", "pv13Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -667,12 +588,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv14-current",
                     "pv14Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV14 Power", "pv14-power", "pv14Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV14 Volt", "pv14-volt", "pv14Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV14 Power", "pv14-power", "pv14Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV14 Volt", "pv14-volt", "pv14Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -681,12 +598,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv15-current",
                     "pv15Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV15 Power", "pv15-power", "pv15Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV15 Volt", "pv15-volt", "pv15Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV15 Power", "pv15-power", "pv15Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV15 Volt", "pv15-volt", "pv15Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -695,12 +608,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv16-current",
                     "pv16Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV16 Power", "pv16-power", "pv16Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV16 Volt", "pv16-volt", "pv16Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV16 Power", "pv16-power", "pv16Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV16 Volt", "pv16-volt", "pv16Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -709,12 +618,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv17-current",
                     "pv17Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV17 Power", "pv17-power", "pv17Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV17 Volt", "pv17-volt", "pv17Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV17 Power", "pv17-power", "pv17Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV17 Volt", "pv17-volt", "pv17Volt"),
                 FoxESSCurrent(
                     coordinator,
                     name,
@@ -723,12 +628,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                     "pv18-current",
                     "pv18Current",
                 ),
-                FoxESSPower(
-                    coordinator, name, deviceID, "PV18 Power", "pv18-power", "pv18Power"
-                ),
-                FoxESSVolt(
-                    coordinator, name, deviceID, "PV18 Volt", "pv18-volt", "pv18Volt"
-                ),
+                FoxESSPower(coordinator, name, deviceID, "PV18 Power", "pv18-power", "pv18Power"),
+                FoxESSVolt(coordinator, name, deviceID, "PV18 Volt", "pv18-volt", "pv18Volt"),
             ]
         )
 
@@ -835,9 +736,7 @@ async def getOADeviceDetail(hass, allData, devicesn, apiKey):
         return True
     else:
         response = json.loads(restOADeviceDetail.data)
-        if response["errno"] == 0 and (
-            response["msg"] == "success" or response["msg"] == "Operation successful"
-        ):
+        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
                 allData["raw"]["ResponseTime"] = ResponseTime
@@ -893,9 +792,7 @@ async def getOADeviceList(hass, allData, devicesn, apiKey):
         return True
     else:
         response = json.loads(restOADeviceList.data)
-        if response["errno"] == 0 and (
-            response["msg"] == "success" or response["msg"] == "Operation successful"
-        ):
+        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
                 allData["raw"]["ResponseTime"] = ResponseTime
@@ -962,13 +859,8 @@ async def getOABatterySettings(hass, allData, devicesn, apiKey):
             return True
         else:
             response = json.loads(restOABatterySettings.data)
-            if response["errno"] == 0 and (
-                response["msg"] == "success"
-                or response["msg"] == "Operation successful"
-            ):
-                _LOGGER.debug(
-                    "OA Battery Settings Good Response: %s", response["result"]
-                )
+            if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
+                _LOGGER.debug("OA Battery Settings Good Response: %s", response["result"])
                 result = response["result"]
                 minSoc = result["minSoc"]
                 minSocOnGrid = result["minSocOnGrid"]
@@ -1036,16 +928,10 @@ async def getReport(hass, allData, apiKey, devicesn):
     else:
         # Openapi responded so process data
         response = json.loads(restOAReport.data)
-        if response["errno"] == 0 and (
-            response["msg"] == "success" or response["msg"] == "Operation successful"
-        ):
-            _LOGGER.debug(
-                "OA Report Data fetched OK: %s %s ", response, restOAReport.data[:350]
-            )
+        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
+            _LOGGER.debug("OA Report Data fetched OK: %s %s ", response, restOAReport.data[:350])
             result = json.loads(restOAReport.data)["result"]
-            today = int(
-                now.strftime("%d")
-            )  # need today as an integer to locate in the monthly report index
+            today = int(now.strftime("%d"))  # need today as an integer to locate in the monthly report index
             for item in result:
                 variableName = item["variable"]
                 # Daily reports break down the data hour by month for each day
@@ -1062,9 +948,7 @@ async def getReport(hass, allData, apiKey, devicesn):
                     index += 1
                     # cumulative_total += dataItem
                 allData["report"][variableName] = round(cumulative_total, 3)
-                _LOGGER.debug(
-                    "OA Report Variable: %s, Total: %s", variableName, cumulative_total
-                )
+                _LOGGER.debug("OA Report Variable: %s, Total: %s", variableName, cumulative_total)
             return False
         else:
             _LOGGER.debug("OA Report Bad Response: %s %s ", response, restOAReport.data)
@@ -1105,9 +989,7 @@ async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
         return True
     else:
         response = json.loads(restOAgen.data)
-        if response["errno"] == 0 and (
-            response["msg"] == "success" or response["msg"] == "Operation successful"
-        ):
+        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             _LOGGER.debug(
                 "OA Daily Generation Report Data fetched OK Response: %s",
                 restOAgen.data[:500],
@@ -1122,9 +1004,7 @@ async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
                 )
             else:
                 allData["reportDailyGeneration"]["value"] = parsed["today"]
-                _LOGGER.debug(
-                    "OA Daily Generation Report data: todays value %s ", parsed["today"]
-                )
+                _LOGGER.debug("OA Daily Generation Report data: todays value %s ", parsed["today"])
             if "month" not in parsed:
                 allData["reportDailyGeneration"]["month"] = 0
                 _LOGGER.debug(
@@ -1133,9 +1013,7 @@ async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
                 )
             else:
                 allData["reportDailyGeneration"]["month"] = parsed["month"]
-                _LOGGER.debug(
-                    "OA Daily Generation Report data: month value %s ", parsed["month"]
-                )
+                _LOGGER.debug("OA Daily Generation Report data: month value %s ", parsed["month"])
             if "cumulative" not in parsed:
                 allData["reportDailyGeneration"]["cumulative"] = 0
                 _LOGGER.debug(
@@ -1228,9 +1106,7 @@ async def getRaw(hass, allData, apiKey, devicesn):
     else:
         # Openapi responded correctly
         response = json.loads(restOADeviceVariables.data)
-        if response["errno"] == 0 and (
-            response["msg"] == "success" or response["msg"] == "Operation successful"
-        ):
+        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
                 allData["raw"]["ResponseTime"] = ResponseTime
@@ -1305,9 +1181,7 @@ async def getRaw(hass, allData, apiKey, devicesn):
             result = test[0].get("datas")
             _LOGGER.debug("OA Variables Good Response: %s", result)
             # allData['raw'] = {}
-            for (
-                item
-            ) in result:  # json.loads(result): # restOADeviceVariables.data)['result']:
+            for item in result:  # json.loads(result): # restOADeviceVariables.data)['result']:
                 variableName = item["variable"]
                 # If value exists
                 if item.get("value") is not None:
@@ -1317,32 +1191,24 @@ async def getRaw(hass, allData, apiKey, devicesn):
                     _LOGGER.debug("Variable %s no value, set to zero", variableName)
                 # fix for various battery and scale items
                 if variableName == "SoC_1":
-                    variableName = "SoC_1"  # do nothing for the moment, future release might align this correctly to use SoC
+                    variableName = (
+                        "SoC_1"  # do nothing for the moment, future release might align this correctly to use SoC
+                    )
                 elif variableName == "batTemperature_1":
-                    variableName = (
-                        "batTemperature"  # use entity for single battery systems
-                    )
+                    variableName = "batTemperature"  # use entity for single battery systems
                 elif variableName == "invBatPower_1":
-                    variableName = (
-                        "invBatPower"  # use entity for single battery systems
-                    )
+                    variableName = "invBatPower"  # use entity for single battery systems
                 elif variableName == "ResidualEnergy":
                     if item.get("unit") is not None:
                         scale = item["unit"]
                         if scale in ["1.0kWh", "kWh", None]:
                             variableValue = round((variableValue * 100), 2)
-                            _LOGGER.debug(
-                                "OA Variables ResidualEnergy Scale: *100 %s", scale
-                            )
+                            _LOGGER.debug("OA Variables ResidualEnergy Scale: *100 %s", scale)
                         elif scale == "0.1kWh":
                             variableValue = round((variableValue * 10), 2)
-                            _LOGGER.debug(
-                                "OA Variables ResidualEnergy Scale: *10 %s", scale
-                            )
+                            _LOGGER.debug("OA Variables ResidualEnergy Scale: *10 %s", scale)
                         else:
-                            _LOGGER.debug(
-                                "OA Variables ResidualEnergy Scale: %s", scale
-                            )
+                            _LOGGER.debug("OA Variables ResidualEnergy Scale: %s", scale)
 
                 allData["raw"][variableName] = variableValue
                 _LOGGER.debug(
@@ -1352,9 +1218,7 @@ async def getRaw(hass, allData, apiKey, devicesn):
                     allData["raw"][variableName],
                 )
 
-                if variableName == "runningState" and (
-                    "hasBattery" in allData["addressbook"]
-                ):
+                if variableName == "runningState" and ("hasBattery" in allData["addressbook"]):
                     hasBat = allData["addressbook"]["hasBattery"]
                     if not hasBat:
                         # solar only inverter
@@ -1637,9 +1501,7 @@ class FoxESSEnergyGenerated(CoordinatorEntity, SensorEntity):
             if self.coordinator.data["reportDailyGeneration"][self._keyValue] == 0:
                 energygenerated = 0
             else:
-                energygenerated = self.coordinator.data["reportDailyGeneration"][
-                    self._keyValue
-                ]
+                energygenerated = self.coordinator.data["reportDailyGeneration"][self._keyValue]
                 if energygenerated > 0:
                     energygenerated = round(energygenerated, 3)
                 else:
@@ -1864,9 +1726,7 @@ class FoxESSEnergyBatDischarge(CoordinatorEntity, SensorEntity):
             if self.coordinator.data["report"]["dischargeEnergyToTal"] == 0:
                 energydischarge = 0
             else:
-                energydischarge = self.coordinator.data["report"][
-                    "dischargeEnergyToTal"
-                ]
+                energydischarge = self.coordinator.data["report"]["dischargeEnergyToTal"]
             return energydischarge
         return None
 
@@ -1962,8 +1822,7 @@ class FoxESSInverter(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         if self.coordinator.data["online"] or (
-            not self.coordinator.data["online"]
-            and int(self.coordinator.data["addressbook"]["status"]) in [1, 2, 3]
+            not self.coordinator.data["online"] and int(self.coordinator.data["addressbook"]["status"]) in [1, 2, 3]
         ):
             if "status" not in self.coordinator.data["addressbook"]:
                 _LOGGER.debug("addressbook status None")
@@ -2141,9 +2000,7 @@ class FoxESSSolarPower(CoordinatorEntity, SensorEntity):
         if "gridConsumptionPower" not in self.coordinator.data["raw"]:
             gridConsumption = 0
         else:
-            gridConsumption = float(
-                self.coordinator.data["raw"]["gridConsumptionPower"]
-            )
+            gridConsumption = float(self.coordinator.data["raw"]["gridConsumptionPower"])
 
         if "batDischargePower" not in self.coordinator.data["raw"]:
             discharge = 0

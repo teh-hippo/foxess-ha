@@ -8,7 +8,6 @@ from typing import Any
 
 import aiohttp
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
@@ -42,7 +41,7 @@ def _build_foxess_headers(api_key: str, path: str) -> dict[str, str]:
     timestamp = str(int(time.time() * 1000))
     # Uses literal \r\n (raw string), matching GetAuth in sensor.py
     signature_text = rf"{path}\r\n{api_key}\r\n{timestamp}"
-    signature = hashlib.md5(signature_text.encode()).hexdigest()
+    signature = hashlib.md5(signature_text.encode()).hexdigest()  # noqa: S324 — FoxESS API requires MD5
     return {
         "token": api_key,
         "timestamp": timestamp,
@@ -52,9 +51,7 @@ def _build_foxess_headers(api_key: str, path: str) -> dict[str, str]:
     }
 
 
-async def _validate_api(
-    session: aiohttp.ClientSession, api_key: str, device_sn: str
-) -> dict[str, Any]:
+async def _validate_api(session: aiohttp.ClientSession, api_key: str, device_sn: str) -> dict[str, Any]:
     """Validate credentials by calling the FoxESS device detail endpoint."""
     path = ENDPOINT_OA_DEVICE_DETAIL
     url = f"{ENDPOINT_OA_DOMAIN}{path}?sn={device_sn}"
@@ -92,9 +89,7 @@ class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step."""
         # Abort if YAML platform is already configured
         for state in self.hass.states.async_all("sensor"):
@@ -147,9 +142,7 @@ class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
 class FoxESSOptionsFlow(OptionsFlow):
     """Handle FoxESS options."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
