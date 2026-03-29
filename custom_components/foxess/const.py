@@ -16,3 +16,9 @@ CONF_EVO = "Evo"
 CONF_HAS_BATTERY = "hasBattery"
 
 DEFAULT_NAME = "FoxESS"
+
+# Staleness detection — raise a Repairs issue when data has been unavailable
+# for too long during expected operating hours.
+DATA_STALENESS_HOURS = 6
+DATA_STALENESS_WINDOW = 12
+DEFAULT_ONLINE_START_HOUR = 6

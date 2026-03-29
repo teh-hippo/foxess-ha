@@ -31,5 +31,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "data_unavailable": {
+      "title": "FoxESS inverter data unavailable for {hours}+ hours",
+      "description": "The inverter **{device_sn}** has not reported data for over {hours} hours during its expected operating window.\n\nCheck that the WiFi datalogger is connected and able to reach the FoxESS cloud. If using a local relay, verify the DNAT rule is correctly configured."
+    }
   }
 }

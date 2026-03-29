@@ -33,6 +33,7 @@ from homeassistant.const import (
     UnitOfReactivePower,
     UnitOfTemperature,
 )
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -50,7 +51,11 @@ from .const import (
     CONF_HAS_BATTERY,
     CONF_V1_API,
     CONF_XTZONE,
+    DATA_STALENESS_HOURS,
+    DATA_STALENESS_WINDOW,
     DEFAULT_NAME,
+    DEFAULT_ONLINE_START_HOUR,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -165,6 +170,57 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     }
     allData["addressbook"]["hasBattery"] = False  # assume no battery is fitted for now
     allData["addressbook"]["status"] = "3"  # assume inverter is off-line for now
+
+    staleness = {
+        "last_online_at": None,
+        "online_start_hour": DEFAULT_ONLINE_START_HOUR,
+        "issue_raised": False,
+    }
+
+    def _check_staleness():
+        """Raise or dismiss a Repairs issue based on data freshness."""
+        now = datetime.now()
+
+        if allData["online"]:
+            prev_online = staleness["last_online_at"]
+            staleness["last_online_at"] = now
+            if prev_online is None or prev_online.hour != now.hour:
+                staleness["online_start_hour"] = now.hour
+            if staleness["issue_raised"]:
+                ir.async_delete_issue(hass, DOMAIN, f"data_unavailable_{devicesn}")
+                staleness["issue_raised"] = False
+                _LOGGER.info("FoxESS data restored for %s", devicesn)
+            return
+
+        if staleness["last_online_at"] is None:
+            return
+
+        hours_offline = (now - staleness["last_online_at"]).total_seconds() / 3600
+        if hours_offline < DATA_STALENESS_HOURS:
+            return
+
+        start = staleness["online_start_hour"]
+        current_hour = now.hour
+        if start <= current_hour < start + DATA_STALENESS_WINDOW:
+            if not staleness["issue_raised"]:
+                ir.async_create_issue(
+                    hass,
+                    DOMAIN,
+                    f"data_unavailable_{devicesn}",
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="data_unavailable",
+                    translation_placeholders={
+                        "hours": str(DATA_STALENESS_HOURS),
+                        "device_sn": devicesn,
+                    },
+                )
+                staleness["issue_raised"] = True
+                _LOGGER.warning(
+                    "FoxESS data unavailable for %s for %d+ hours",
+                    devicesn,
+                    DATA_STALENESS_HOURS,
+                )
 
     async def async_update_data():
         _LOGGER.debug("Updating data from https://www.foxesscloud.com/")
@@ -281,6 +337,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         timeslice[devicesn] = tslice
 
         _LOGGER.debug(allData)
+
+        _check_staleness()
 
         return allData
 
