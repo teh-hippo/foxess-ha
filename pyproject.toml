@@ -1,6 +1,6 @@
 [project]
 name = "foxess-ha"
-version = "1.0.0"
+version = "1.1.0"
 description = "Home Assistant FoxESS Cloud integration (fork with solar-only + config flow)"
 readme = "README.md"
 license = "MIT"
