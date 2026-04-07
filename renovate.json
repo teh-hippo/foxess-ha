@@ -3,18 +3,20 @@
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
   "forkProcessing": "enabled",
+  "timezone": "Australia/Sydney",
+  "schedule": ["before 7am on Monday"],
+  "automerge": true,
+  "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 7am on Monday"],
-    "commitMessageAction": "upgrade",
-    "automerge": true
+    "commitMessageAction": "upgrade"
   },
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "all non-major"
     }
   ],
-  "commitMessagePrefix": "build(deps):",
-  "dependencyDashboard": true
+  "commitMessagePrefix": "build(deps):"
 }

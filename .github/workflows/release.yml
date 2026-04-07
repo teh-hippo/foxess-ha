@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: astral-sh/setup-uv@v7
 
@@ -29,7 +30,7 @@ jobs:
         id: semantic_release
         uses: python-semantic-release/python-semantic-release@v10
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Create/Update latest GitHub Release
         if: ${{ steps.semantic_release.outputs.released == 'true' && steps.semantic_release.outputs.is_prerelease == 'false' }}
