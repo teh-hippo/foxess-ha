@@ -4,8 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== Lint ==="
-uv run ruff check .
-uv run ruff format --check .
+uv sync --locked
+
+uv run --no-sync ruff check .
+uv run --no-sync ruff format --check .
 
 echo ""
 echo "✅ All checks passed — safe to push."
