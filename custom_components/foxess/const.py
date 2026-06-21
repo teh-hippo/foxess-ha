@@ -17,8 +17,11 @@ CONF_HAS_BATTERY = "hasBattery"
 
 DEFAULT_NAME = "FoxESS"
 
-# Staleness detection — raise a Repairs issue when data has been unavailable
-# for too long during expected operating hours.
-DATA_STALENESS_HOURS = 6
-DATA_STALENESS_WINDOW = 12
-DEFAULT_ONLINE_START_HOUR = 6
+# Sun-aware sleep/offline handling. A PV-only inverter is expected to be online
+# only while the sun is above the wake elevation; a Repairs issue is raised only
+# if it stays offline once the sun has been sufficiently up for the grace window.
+CONF_WAKE_ELEVATION = "wake_elevation"
+CONF_WAKE_GRACE = "wake_grace_minutes"
+
+DEFAULT_WAKE_ELEVATION = 5  # degrees of solar elevation
+DEFAULT_WAKE_GRACE_MINUTES = 60  # minutes

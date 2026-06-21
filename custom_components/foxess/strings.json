@@ -27,15 +27,32 @@
       "init": {
         "data": {
           "extendPV": "More than 6 PV strings",
-          "Evo": "Evo series inverter"
+          "Evo": "Evo series inverter",
+          "wake_elevation": "Wake solar elevation (degrees)",
+          "wake_grace_minutes": "Wake grace period (minutes)"
+        },
+        "data_description": {
+          "wake_elevation": "Solar elevation above which a PV-only inverter is expected to be online; below this it sleeps without raising an issue.",
+          "wake_grace_minutes": "How long the inverter may stay offline once the sun is up before a Repairs issue is raised."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "operational_state": {
+        "state": {
+          "online": "Online",
+          "asleep": "Asleep",
+          "offline": "Offline"
         }
       }
     }
   },
   "issues": {
     "data_unavailable": {
-      "title": "FoxESS inverter data unavailable for {hours}+ hours",
-      "description": "The inverter **{device_sn}** has not reported data for over {hours} hours during its expected operating window.\n\nCheck that the WiFi datalogger is connected and able to reach the FoxESS cloud. If using a local relay, verify the DNAT rule is correctly configured."
+      "title": "FoxESS inverter {device_sn} offline while the sun is up",
+      "description": "The inverter **{device_sn}** has stayed offline for over {grace} minutes even though the sun is above {elevation}° (its expected operating elevation).\n\nCheck that the WiFi datalogger is connected and able to reach the FoxESS cloud. If using a local relay, verify the DNAT rule is correctly configured."
     }
   }
 }

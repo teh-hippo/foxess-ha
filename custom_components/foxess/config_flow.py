@@ -13,6 +13,11 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .const import (
     CONF_APIKEY,
@@ -21,7 +26,11 @@ from .const import (
     CONF_EVO,
     CONF_EXTPV,
     CONF_HAS_BATTERY,
+    CONF_WAKE_ELEVATION,
+    CONF_WAKE_GRACE,
     DEFAULT_NAME,
+    DEFAULT_WAKE_ELEVATION,
+    DEFAULT_WAKE_GRACE_MINUTES,
     DOMAIN,
     ENDPOINT_OA_DEVICE_DETAIL,
     ENDPOINT_OA_DOMAIN,
@@ -159,6 +168,14 @@ class FoxESSOptionsFlow(OptionsFlow):
                         CONF_EVO,
                         default=options.get(CONF_EVO, False),
                     ): bool,
+                    vol.Optional(
+                        CONF_WAKE_ELEVATION,
+                        default=options.get(CONF_WAKE_ELEVATION, DEFAULT_WAKE_ELEVATION),
+                    ): NumberSelector(NumberSelectorConfig(min=-6, max=15, step=0.5, mode=NumberSelectorMode.BOX)),
+                    vol.Optional(
+                        CONF_WAKE_GRACE,
+                        default=options.get(CONF_WAKE_GRACE, DEFAULT_WAKE_GRACE_MINUTES),
+                    ): NumberSelector(NumberSelectorConfig(min=0, max=180, step=5, mode=NumberSelectorMode.BOX)),
                 }
             ),
         )
