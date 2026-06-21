@@ -1,6 +1,77 @@
 # CHANGELOG
 
 
+## v1.2.0 (2026-06-21)
+
+### Build System
+
+- **deps**: Adopt shared Renovate preset
+  ([`ad7a378`](https://github.com/teh-hippo/foxess-ha/commit/ad7a37885bfa7036fc63a288883b9cd905e63444))
+
+- **deps**: Pin dependencies
+  ([`ae5d1af`](https://github.com/teh-hippo/foxess-ha/commit/ae5d1af5d7deaccf5eee96eca83d128690ea6e6e))
+
+- **deps**: Update astral-sh/setup-uv action to v8
+  ([`e770acf`](https://github.com/teh-hippo/foxess-ha/commit/e770acf8ee246f83174eab1ab6de65fa29160c1c))
+
+- **deps**: Update github/codeql-action digest to 7211b7c
+  ([`c2f33be`](https://github.com/teh-hippo/foxess-ha/commit/c2f33be788fae79c0ceecfc70829d586018511ff))
+
+- **deps**: Update softprops/action-gh-release action to v3
+  ([`71e6e44`](https://github.com/teh-hippo/foxess-ha/commit/71e6e440904d2eb43cafa4a3ef8e5058e9e12e0d))
+
+- **deps**: Upgrade
+  ([`424b4e0`](https://github.com/teh-hippo/foxess-ha/commit/424b4e0f54c15a8d2442016112d30699b99974d4))
+
+- **deps**: Upgrade
+  ([`cb933d8`](https://github.com/teh-hippo/foxess-ha/commit/cb933d88e3c5959133279a55a985c3ca4b084c5d))
+
+- **deps**: Upgrade
+  ([`9234e00`](https://github.com/teh-hippo/foxess-ha/commit/9234e003834db90de90e997b47e593d5c48ffd16))
+
+- **deps**: Upgrade
+  ([`6e4ab88`](https://github.com/teh-hippo/foxess-ha/commit/6e4ab88a202bd2ffd015071e9cf478e7134786eb))
+
+- **deps**: Upgrade
+  ([`a1dab74`](https://github.com/teh-hippo/foxess-ha/commit/a1dab74ba40d75c19749666fe5e0203517b72fa0))
+
+- **renovate**: Align config with canonical baseline
+  ([`adb34bf`](https://github.com/teh-hippo/foxess-ha/commit/adb34bf4e2148300b8e56a63a5547b8774396619))
+
+### Chores
+
+- **deps**: Lock file maintenance
+  ([`0a65935`](https://github.com/teh-hippo/foxess-ha/commit/0a65935d52e072eae59a739337755d2a9d1e343b))
+
+- **deps**: Update actions/checkout digest to df4cb1c
+  ([`91b886c`](https://github.com/teh-hippo/foxess-ha/commit/91b886c32781fcb9fa91fa9791e578667505b797))
+
+- **deps**: Update astral-sh/setup-uv action to v8.2.0
+  ([`884174a`](https://github.com/teh-hippo/foxess-ha/commit/884174ad4709790182c9b8a3bffa0369e8f68988))
+
+### Continuous Integration
+
+- Adopt shared CodeQL workflow
+  ([`7fa9238`](https://github.com/teh-hippo/foxess-ha/commit/7fa92386c99759351bafe786cd3fd963c53c548a))
+
+- Adopt uv sync --locked pattern
+  ([`36b7e51`](https://github.com/teh-hippo/foxess-ha/commit/36b7e51ff2c508fc92547994813336270b21ac11))
+
+- Stagger cron and pin floating action refs
+  ([`3e114ee`](https://github.com/teh-hippo/foxess-ha/commit/3e114ee9d8d1ef85eec7c10b8145251c963b0857))
+
+- **release**: Commit uv.lock from build_command via assets
+  ([`2ae0bb5`](https://github.com/teh-hippo/foxess-ha/commit/2ae0bb515b28b14f219abaaa37c6696bc6a35324))
+
+- **validate**: Drop daily cron and Dependabot/Copilot branch push triggers
+  ([`f28c2fd`](https://github.com/teh-hippo/foxess-ha/commit/f28c2fd03ce78d3f3e4f6cfcf0279a24100f9b64))
+
+### Features
+
+- Sun-aware sleep/offline handling for PV-only inverters
+  ([`56b66a0`](https://github.com/teh-hippo/foxess-ha/commit/56b66a0abfcc79101607383ac5c28b14fe557f84))
+
+
 ## v1.1.0 (2026-04-07)
 
 ### Build System
