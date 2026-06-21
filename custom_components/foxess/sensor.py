@@ -34,11 +34,14 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.icon import icon_for_battery_level
+from homeassistant.helpers.sun import get_astral_location
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
 )
+from homeassistant.util import dt as dt_util
 from homeassistant.util.ssl import SSLCipherList
 
 from .const import (
@@ -50,12 +53,20 @@ from .const import (
     CONF_GET_VARIABLES,
     CONF_HAS_BATTERY,
     CONF_V1_API,
+    CONF_WAKE_ELEVATION,
+    CONF_WAKE_GRACE,
     CONF_XTZONE,
-    DATA_STALENESS_HOURS,
-    DATA_STALENESS_WINDOW,
     DEFAULT_NAME,
-    DEFAULT_ONLINE_START_HOUR,
+    DEFAULT_WAKE_ELEVATION,
+    DEFAULT_WAKE_GRACE_MINUTES,
     DOMAIN,
+)
+from .sun_state import (
+    OPERATIONAL_STATES,
+    expected_online,
+    operational_state,
+    should_offload,
+    should_raise_issue,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -112,10 +123,18 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_V1_API): cv.boolean,
         vol.Optional(CONF_EVO): cv.boolean,
         vol.Optional(CONF_HAS_BATTERY): cv.boolean,
+        vol.Optional(CONF_WAKE_ELEVATION): vol.Coerce(float),
+        vol.Optional(CONF_WAKE_GRACE): vol.Coerce(int),
     }
 )
 
 token = None
+
+
+def _solar_elevation(hass, when):
+    """Return the sun's elevation in degrees at an aware datetime (DST-safe)."""
+    location, observer_elevation = get_astral_location(hass)
+    return location.solar_elevation(when, observer_elevation)
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
@@ -132,6 +151,13 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     V1_Api = config.get(CONF_V1_API)
     Evo = config.get(CONF_EVO)
     hasBatteryOverride = config.get(CONF_HAS_BATTERY)
+    wake_elevation = config.get(CONF_WAKE_ELEVATION)
+    if wake_elevation is None:
+        wake_elevation = DEFAULT_WAKE_ELEVATION
+    wake_grace = config.get(CONF_WAKE_GRACE)
+    if wake_grace is None:
+        wake_grace = DEFAULT_WAKE_GRACE_MINUTES
+    wake_grace = int(wake_grace)
     _LOGGER.debug("API Key: %s", apiKey)
     _LOGGER.debug("Device SN: %s", devicesn)
     _LOGGER.debug("Device ID: %s", deviceID)
@@ -167,65 +193,107 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         "battery": {},
         "addressbook": {},
         "online": False,
+        "operational_state": None,
     }
     allData["addressbook"]["hasBattery"] = False  # assume no battery is fitted for now
     allData["addressbook"]["status"] = "3"  # assume inverter is off-line for now
 
     staleness = {
         "last_online_at": None,
-        "online_start_hour": DEFAULT_ONLINE_START_HOUR,
+        "offline_since_at": None,
         "issue_raised": False,
+        "detail_seen": False,
     }
 
-    def _check_staleness():
-        """Raise or dismiss a Repairs issue based on data freshness."""
-        now = datetime.now()
+    def _is_pv_only():
+        """Whether sun-grace applies. Config override wins; else use the detected battery.
 
-        if allData["online"]:
-            prev_online = staleness["last_online_at"]
+        While the battery state is still unconfirmed (no device detail yet), treat the
+        inverter as not PV-only so it is polled 24/7 rather than offloaded.
+        """
+        if hasBatteryOverride is not None:
+            return hasBatteryOverride is False
+        if not staleness["detail_seen"]:
+            return False
+        return allData["addressbook"].get("hasBattery") is False
+
+    def _elevations(now):
+        """Return (elevation_now, elevation_grace_ago) in degrees."""
+        return (
+            _solar_elevation(hass, now),
+            _solar_elevation(hass, now - timedelta(minutes=wake_grace)),
+        )
+
+    def _update_status(now, is_expected_online):
+        """Set the categorised operational state and raise/clear the Repairs issue.
+
+        PV-only inverters sleep benignly when the sun is down; an issue is raised only if
+        the inverter stays offline for the grace window once the sun is up. Battery
+        inverters must stay online 24/7, so any sustained offline raises an issue.
+        """
+        state = operational_state(allData["online"], _is_pv_only(), is_expected_online)
+        allData["operational_state"] = state
+        issue_id = f"data_unavailable_{devicesn}"
+
+        if state == "online":
             staleness["last_online_at"] = now
-            if prev_online is None or prev_online.hour != now.hour:
-                staleness["online_start_hour"] = now.hour
+            staleness["offline_since_at"] = None
+            # Delete unconditionally so an issue raised before a restart is cleared even
+            # though the in-memory issue_raised flag was reset (no-op when absent).
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
             if staleness["issue_raised"]:
-                ir.async_delete_issue(hass, DOMAIN, f"data_unavailable_{devicesn}")
                 staleness["issue_raised"] = False
                 _LOGGER.info("FoxESS data restored for %s", devicesn)
             return
 
-        if staleness["last_online_at"] is None:
+        if staleness["offline_since_at"] is None:
+            staleness["offline_since_at"] = now
+
+        if state == "asleep":
             return
 
-        hours_offline = (now - staleness["last_online_at"]).total_seconds() / 3600
-        if hours_offline < DATA_STALENESS_HOURS:
-            return
-
-        start = staleness["online_start_hour"]
-        current_hour = now.hour
-        if start <= current_hour < start + DATA_STALENESS_WINDOW:
-            if not staleness["issue_raised"]:
-                ir.async_create_issue(
-                    hass,
-                    DOMAIN,
-                    f"data_unavailable_{devicesn}",
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.WARNING,
-                    translation_key="data_unavailable",
-                    translation_placeholders={
-                        "hours": str(DATA_STALENESS_HOURS),
-                        "device_sn": devicesn,
-                    },
-                )
-                staleness["issue_raised"] = True
-                _LOGGER.warning(
-                    "FoxESS data unavailable for %s for %d+ hours",
-                    devicesn,
-                    DATA_STALENESS_HOURS,
-                )
+        # state == "offline": debounce so a brief daytime cloud blip does not alarm.
+        offline_minutes = (now - staleness["offline_since_at"]).total_seconds() / 60
+        if should_raise_issue(state, offline_minutes, wake_grace, staleness["issue_raised"]):
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="data_unavailable",
+                translation_placeholders={
+                    "device_sn": devicesn,
+                    "elevation": str(wake_elevation),
+                    "grace": str(wake_grace),
+                },
+            )
+            staleness["issue_raised"] = True
+            _LOGGER.warning(
+                "FoxESS data unavailable for %s for %d+ minutes while the sun is up",
+                devicesn,
+                wake_grace,
+            )
 
     async def async_update_data():
         _LOGGER.debug("Updating data from https://www.foxesscloud.com/")
         global token, timeslice, LastHour
-        hournow = datetime.now().strftime("%H")  # update hour now
+        now = dt_util.utcnow()
+        elev_now, elev_grace_ago = _elevations(now)
+        is_expected_online = expected_online(elev_now, elev_grace_ago, wake_elevation)
+        # Night offload: once the inverter is asleep (PV-only, offline, sun below the wake
+        # elevation for the whole grace window) suspend all cloud polling until dawn. The
+        # detail_seen guard guarantees the first poll still runs so the addressbook is
+        # populated before any offload.
+        if should_offload(
+            staleness["detail_seen"], allData["online"], _is_pv_only(), elev_now, elev_grace_ago, wake_elevation
+        ):
+            if staleness["offline_since_at"] is None:
+                staleness["offline_since_at"] = now
+            allData["operational_state"] = "asleep"
+            timeslice[devicesn] = RETRY_NEXT_SLOT
+            return allData
+        hournow = dt_util.now().strftime("%H")  # update hour now
         _LOGGER.debug("Time now: %s, last %s", hournow, LastHour)
         tslice = timeslice[devicesn] + 1  # increment current device time slice
         timeslice[devicesn] = tslice
@@ -241,6 +309,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 else:
                     geterror = await getOADeviceDetail(hass, allData, devicesn, apiKey)
                 await asyncio.sleep(1)  # OpenAPI demand
+                if not geterror:
+                    # Addressbook is now populated; night offload is safe from here on.
+                    staleness["detail_seen"] = True
             if not geterror:
                 if allData["addressbook"]["status"] is not None:
                     statetest = int(allData["addressbook"]["status"])
@@ -338,7 +409,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
         _LOGGER.debug(allData)
 
-        _check_staleness()
+        _update_status(now, is_expected_online)
 
         return allData
 
@@ -496,6 +567,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
                 "running-state",
                 "runningState",
             ),
+            FoxESSStatus(coordinator, name, deviceID),
         ]
     )
 
@@ -702,6 +774,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
         CONF_HAS_BATTERY: entry.data.get(CONF_HAS_BATTERY),
         CONF_EXTPV: entry.options.get(CONF_EXTPV, False),
         CONF_EVO: entry.options.get(CONF_EVO, False),
+        CONF_WAKE_ELEVATION: entry.options.get(CONF_WAKE_ELEVATION, DEFAULT_WAKE_ELEVATION),
+        CONF_WAKE_GRACE: entry.options.get(CONF_WAKE_GRACE, DEFAULT_WAKE_GRACE_MINUTES),
         CONF_XTZONE: False,
         CONF_GET_VARIABLES: False,
         CONF_V1_API: True,
@@ -949,8 +1023,8 @@ async def getReport(hass, allData, apiKey, devicesn):
     path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_REPORT
     _LOGGER.debug("OA Report fetch %s ", path)
 
-    now = datetime.now()
-    month = str(datetime.now().month)  # now.strftime("%-m")
+    now = dt_util.now()
+    month = str(now.month)  # local month for the report query
 
     reportData = (
         '{"sn":"'
@@ -1908,7 +1982,7 @@ class FoxESSInverter(CoordinatorEntity, SensorEntity):
             ATTR_MANAGER: self.coordinator.data["addressbook"][ATTR_MANAGER],
             ATTR_SLAVE: self.coordinator.data["addressbook"][ATTR_SLAVE],
             ATTR_BATTERYLIST: self.coordinator.data["addressbook"][ATTR_BATTERYLIST],
-            ATTR_LASTCLOUDSYNC: datetime.now(),
+            ATTR_LASTCLOUDSYNC: dt_util.now(),
         }
 
 
@@ -1966,6 +2040,26 @@ class FoxESSRunningState(CoordinatorEntity, SensorEntity):
         return None
 
 
+class FoxESSStatus(CoordinatorEntity, SensorEntity):
+    """Diagnostic sun-aware operational state: online / asleep / offline."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = OPERATIONAL_STATES
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "operational_state"
+    _attr_icon = "mdi:solar-power-variant"
+
+    def __init__(self, coordinator, name, deviceID):
+        super().__init__(coordinator=coordinator)
+        _LOGGER.debug("Initiating Entity - Status")
+        self._attr_name = name + " - Status"
+        self._attr_unique_id = deviceID + "status"
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.data.get("operational_state")
+
+
 class FoxESSEnergySolar(CoordinatorEntity, SensorEntity):
     _attr_state_class: SensorStateClass = SensorStateClass.TOTAL_INCREASING
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -1986,6 +2080,8 @@ class FoxESSEnergySolar(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
+        if not self.coordinator.data["online"]:
+            return None
         if "loads" not in self.coordinator.data["report"]:
             loads = 0
         else:
@@ -2037,6 +2133,8 @@ class FoxESSSolarPower(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
+        if not self.coordinator.data["online"]:
+            return None
         if "loadsPower" not in self.coordinator.data["raw"]:
             loads = 0
         else:

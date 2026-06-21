@@ -4,7 +4,7 @@ version = "1.1.0"
 description = "Home Assistant FoxESS Cloud integration (fork with solar-only + config flow)"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
@@ -34,5 +34,13 @@ token = { env = "GITHUB_TOKEN" }
 
 [dependency-groups]
 dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-homeassistant-custom-component",
     "ruff>=0.9",
+    "xmltodict",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
