@@ -8,10 +8,10 @@ import time
 from collections import namedtuple
 from datetime import datetime, timedelta
 
+import aiohttp
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from dateutil import parser
-from homeassistant.components.rest.data import RestData
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
     SensorDeviceClass,
@@ -34,6 +34,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.sun import get_astral_location
@@ -42,7 +43,6 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 from homeassistant.util import dt as dt_util
-from homeassistant.util.ssl import SSLCipherList
 
 from .const import (
     CONF_APIKEY,
@@ -103,6 +103,10 @@ CONF_SYSTEM_ID = "system_id"
 RETRY_NEXT_SLOT = -1
 RETRY_IN_5_MINS = 25
 DNS_ERROR = 101
+
+# aiohttp 3.10+ raises a DNS-specific connector error; on older versions this
+# resolves to an empty tuple so isinstance() simply falls back to message matching.
+_DNS_CONNECTOR_ERROR = getattr(aiohttp, "ClientConnectorDNSError", ())
 
 DEFAULT_VERIFY_SSL = False  # True
 
@@ -833,6 +837,22 @@ async def waitforAPI():
     return False
 
 
+async def _async_api_fetch(hass, method, url, headers, data=None):
+    """Fetch a FoxESS Cloud endpoint, returning (response_text, exception)."""
+    session = async_get_clientsession(hass, verify_ssl=DEFAULT_VERIFY_SSL)
+    try:
+        async with session.request(
+            method,
+            url,
+            headers=headers,
+            data=data,
+            timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
+        ) as response:
+            return await response.text(encoding=DEFAULT_ENCODING), None
+    except (aiohttp.ClientError, TimeoutError) as err:
+        return None, err
+
+
 async def getOADeviceDetail(hass, allData, devicesn, apiKey):
     await waitforAPI()
 
@@ -848,26 +868,13 @@ async def getOADeviceDetail(hass, allData, devicesn, apiKey):
     _LOGGER.debug("OADevice Detail fetch %s%s", path, devicesn)
     timestamp = round(time.time() * 1000)
 
-    restOADeviceDetail = RestData(
-        hass,
-        METHOD_GET,
-        path + devicesn,
-        DEFAULT_ENCODING,
-        None,
-        headerData,
-        None,
-        None,
-        DEFAULT_VERIFY_SSL,
-        SSLCipherList.PYTHON_DEFAULT,
-        DEFAULT_TIMEOUT,
-    )
-    await restOADeviceDetail.async_update()
+    detailText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData)
 
-    if restOADeviceDetail.data is None or restOADeviceDetail.data == "":
+    if detailText is None or detailText == "":
         _LOGGER.debug("Unable to get OA Device Detail from FoxESS Cloud")
         return True
     else:
-        response = json.loads(restOADeviceDetail.data)
+        response = json.loads(detailText)
         if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
@@ -904,26 +911,13 @@ async def getOADeviceList(hass, allData, devicesn, apiKey):
 
     listData = '{ "currentPage": 1, "pageSize": 10}'
 
-    restOADeviceList = RestData(
-        hass,
-        METHOD_POST,
-        path,
-        DEFAULT_ENCODING,
-        None,
-        headerData,
-        None,
-        listData,
-        DEFAULT_VERIFY_SSL,
-        SSLCipherList.PYTHON_DEFAULT,
-        DEFAULT_TIMEOUT,
-    )
-    await restOADeviceList.async_update()
+    listText, _ = await _async_api_fetch(hass, METHOD_POST, path, headerData, listData)
 
-    if restOADeviceList.data is None or restOADeviceList.data == "":
+    if listText is None or listText == "":
         _LOGGER.debug("Unable to get OA Device List from FoxESS Cloud")
         return True
     else:
-        response = json.loads(restOADeviceList.data)
+        response = json.loads(listText)
         if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
@@ -931,7 +925,7 @@ async def getOADeviceList(hass, allData, devicesn, apiKey):
             else:
                 allData["raw"]["ResponseTime"] = 0
             _LOGGER.debug("OA Device List Good Response: %s", response["result"])
-            result = json.loads(restOADeviceList.data)["result"]["data"]
+            result = json.loads(listText)["result"]["data"]
             for item in result:
                 item["stationName"]
                 _LOGGER.debug("OA Device List item: %s", item)
@@ -971,26 +965,13 @@ async def getOABatterySettings(hass, allData, devicesn, apiKey):
     if hasBattery:
         # only make this call if device detail reports battery fitted
         _LOGGER.debug("OABattery Settings fetch %s %s", path, devicesn)
-        restOABatterySettings = RestData(
-            hass,
-            METHOD_GET,
-            path + devicesn,
-            DEFAULT_ENCODING,
-            None,
-            headerData,
-            None,
-            None,
-            DEFAULT_VERIFY_SSL,
-            SSLCipherList.PYTHON_DEFAULT,
-            DEFAULT_TIMEOUT,
-        )
-        await restOABatterySettings.async_update()
+        batteryText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData)
 
-        if restOABatterySettings.data is None:
+        if batteryText is None:
             _LOGGER.debug("Unable to get OA Battery Settings from FoxESS Cloud")
             return True
         else:
-            response = json.loads(restOABatterySettings.data)
+            response = json.loads(batteryText)
             if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
                 _LOGGER.debug("OA Battery Settings Good Response: %s", response["result"])
                 result = response["result"]
@@ -1038,31 +1019,17 @@ async def getReport(hass, allData, apiKey, devicesn):
 
     _LOGGER.debug("getReport OA request: %s", reportData)
 
-    restOAReport = RestData(
-        hass,
-        METHOD_POST,
-        path,
-        DEFAULT_ENCODING,
-        None,
-        headerData,
-        None,
-        reportData,
-        DEFAULT_VERIFY_SSL,
-        SSLCipherList.PYTHON_DEFAULT,
-        DEFAULT_TIMEOUT,
-    )
+    reportText, _ = await _async_api_fetch(hass, METHOD_POST, path, headerData, reportData)
 
-    await restOAReport.async_update()
-
-    if restOAReport.data is None or restOAReport.data == "":
+    if reportText is None or reportText == "":
         _LOGGER.debug("Unable to get OA Report from FoxESS Cloud")
         return True
     else:
         # Openapi responded so process data
-        response = json.loads(restOAReport.data)
+        response = json.loads(reportText)
         if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            _LOGGER.debug("OA Report Data fetched OK: %s %s ", response, restOAReport.data[:350])
-            result = json.loads(restOAReport.data)["result"]
+            _LOGGER.debug("OA Report Data fetched OK: %s %s ", response, reportText[:350])
+            result = json.loads(reportText)["result"]
             today = int(now.strftime("%d"))  # need today as an integer to locate in the monthly report index
             for item in result:
                 variableName = item["variable"]
@@ -1083,7 +1050,7 @@ async def getReport(hass, allData, apiKey, devicesn):
                 _LOGGER.debug("OA Report Variable: %s, Total: %s", variableName, cumulative_total)
             return False
         else:
-            _LOGGER.debug("OA Report Bad Response: %s %s ", response, restOAReport.data)
+            _LOGGER.debug("OA Report Bad Response: %s %s ", response, reportText)
             return True
 
 
@@ -1100,34 +1067,20 @@ async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
 
     _LOGGER.debug("getReportDailyGeneration OA request: %s", generationData)
 
-    restOAgen = RestData(
-        hass,
-        METHOD_GET,
-        path + devicesn,
-        DEFAULT_ENCODING,
-        None,
-        headerData,
-        None,
-        generationData,
-        DEFAULT_VERIFY_SSL,
-        SSLCipherList.PYTHON_DEFAULT,
-        DEFAULT_TIMEOUT,
-    )
+    genText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData, generationData)
 
-    await restOAgen.async_update()
-
-    if restOAgen.data is None or restOAgen.data == "":
+    if genText is None or genText == "":
         _LOGGER.debug("Unable to get OA Daily Generation Report from FoxESS Cloud")
         return True
     else:
-        response = json.loads(restOAgen.data)
+        response = json.loads(genText)
         if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             _LOGGER.debug(
                 "OA Daily Generation Report Data fetched OK Response: %s",
-                restOAgen.data[:500],
+                genText[:500],
             )
 
-            parsed = json.loads(restOAgen.data)["result"]
+            parsed = json.loads(genText)["result"]
             if "today" not in parsed:
                 allData["reportDailyGeneration"]["value"] = 0
                 _LOGGER.debug(
@@ -1163,7 +1116,7 @@ async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
             _LOGGER.debug(
                 "OA Daily Generation Report Bad Response: %s %s ",
                 response,
-                restOAgen.data,
+                genText,
             )
             return True
 
@@ -1209,35 +1162,22 @@ async def getRaw(hass, allData, apiKey, devicesn):
     path = _ENDPOINT_OA_DOMAIN + path
     _LOGGER.debug("Path: %s", path)
 
-    restOADeviceVariables = RestData(
-        hass,
-        METHOD_POST,
-        path,
-        DEFAULT_ENCODING,
-        None,
-        headerData,
-        None,
-        rawData,
-        DEFAULT_VERIFY_SSL,
-        SSLCipherList.PYTHON_DEFAULT,
-        DEFAULT_TIMEOUT,
-    )
-
-    await restOADeviceVariables.async_update()
-    if restOADeviceVariables.last_exception is not None:
-        lastex = str(restOADeviceVariables.last_exception)
+    varText, lastException = await _async_api_fetch(hass, METHOD_POST, path, headerData, rawData)
+    if lastException is not None:
+        lastex = str(lastException)
         _LOGGER.debug("Getvar exception: %s", lastex)
-        if "Timeout while contacting DNS servers" in lastex:
+        dns_tokens = ("dns", "resolve", "resolution", "name or service not known", "nodename nor servname")
+        if isinstance(lastException, _DNS_CONNECTOR_ERROR) or any(token in lastex.lower() for token in dns_tokens):
             _LOGGER.debug("Getvar DNS exception: %s", lastex)
             return DNS_ERROR
             # [Timeout while contacting DNS servers]
 
-    if restOADeviceVariables.data is None or restOADeviceVariables.data == "":
+    if varText is None or varText == "":
         _LOGGER.debug("Unable to get OA Variables from FoxESS Cloud")
         return True
     else:
         # Openapi responded correctly
-        response = json.loads(restOADeviceVariables.data)
+        response = json.loads(varText)
         if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
             ResponseTime = round(time.time() * 1000) - timestamp
             if ResponseTime > 0:
@@ -1245,7 +1185,7 @@ async def getRaw(hass, allData, apiKey, devicesn):
             else:
                 allData["raw"]["ResponseTime"] = 0
 
-            test = json.loads(restOADeviceVariables.data)["result"]
+            test = json.loads(varText)["result"]
 
             timercv = test[0].get("time")
             try:
@@ -1313,7 +1253,7 @@ async def getRaw(hass, allData, apiKey, devicesn):
             result = test[0].get("datas")
             _LOGGER.debug("OA Variables Good Response: %s", result)
             # allData['raw'] = {}
-            for item in result:  # json.loads(result): # restOADeviceVariables.data)['result']:
+            for item in result:  # json.loads(result): # varText['result']:
                 variableName = item["variable"]
                 # If value exists
                 if item.get("value") is not None:
