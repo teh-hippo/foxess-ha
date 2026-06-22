@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v1.2.1 (2026-06-22)
+
+### Bug Fixes
+
+- Call the FoxESS API via aiohttp and drop the internal rest dependency
+  ([`46edcfd`](https://github.com/teh-hippo/foxess-ha/commit/46edcfdd38a06b4c4131bfa99e711a8f07b4461a))
+
+### Chores
+
+- **deps**: Update actions/checkout action to v7
+  ([`e83083e`](https://github.com/teh-hippo/foxess-ha/commit/e83083e58d892efddcbe79b29c22242a2484bebc))
+
+- **deps**: Update softprops/action-gh-release digest to 718ea10
+  ([`21d35c4`](https://github.com/teh-hippo/foxess-ha/commit/21d35c47388f51723adefa0097238397128962ab))
+
+
 ## v1.2.0 (2026-06-21)
 
 ### Build System
