@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## v1.2.2 (2026-07-05)
+
+### Bug Fixes
+
+- **sensor**: Redact API key from debug log
+  ([`4176636`](https://github.com/teh-hippo/foxess-ha/commit/4176636e340a87e30833b634d5d07e98f2876881))
+
+### Chores
+
+- **deps**: Update teh-hippo/common-repo-configs digest to b3d0a78
+  ([`0bb559d`](https://github.com/teh-hippo/foxess-ha/commit/0bb559d786590fc14cb3fa00ae36c10bc472fadb))
+
+### Continuous Integration
+
+- **hacs**: Skip licence check for unlicensed upstream fork
+  ([`0551257`](https://github.com/teh-hippo/foxess-ha/commit/055125798e258f2ac5595d2b59feb79cfb82c67c))
+
+
 ## v1.2.1 (2026-06-22)
 
 ### Bug Fixes
