@@ -30,6 +30,8 @@ jobs:
       - uses: hacs/action@dcb30e72781db3f207d5236b861172774ab0b485  # main pinned 2026-05-06
         with:
           category: integration
+          # Fork of an unlicensed upstream; skip the HACS default-store licence check.
+          ignore: license
           comment: false
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
