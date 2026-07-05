@@ -162,7 +162,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     if wake_grace is None:
         wake_grace = DEFAULT_WAKE_GRACE_MINUTES
     wake_grace = int(wake_grace)
-    _LOGGER.debug("API Key: %s", apiKey)
+    _LOGGER.debug("API Key: <redacted, length %s>", len(apiKey) if apiKey else 0)
     _LOGGER.debug("Device SN: %s", devicesn)
     _LOGGER.debug("Device ID: %s", deviceID)
     _LOGGER.debug("FoxESS Scan Interval: %s minutes", SCAN_MINUTES)
