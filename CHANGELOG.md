@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v1.2.3 (2026-07-06)
+
+### Bug Fixes
+
+- **deps**: Refresh uv lock to clear transitive advisories
+  ([`4264d11`](https://github.com/teh-hippo/foxess-ha/commit/4264d113e68b4d29ee3e907f62e43bf4c0eec7a0))
+
+
 ## v1.2.2 (2026-07-05)
 
 ### Bug Fixes
