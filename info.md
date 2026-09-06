@@ -16,7 +16,9 @@
 
 ## ⚙️ Installation & ♻️ Update
 
-Use hacs.io to manage the installation and update process. Right now this integration is part of HACS by default - no more neeed to add it by custom repositories 🥳
+This fork requires **Home Assistant Core 2026.7 or newer**.  Add
+[`teh-hippo/foxess-ha`](https://github.com/teh-hippo/foxess-ha) as a HACS custom repository of type **Integration**.
+The default HACS catalogue entry installs upstream, not this fork.
 
 ## ⌨️ Manual installation 
 
@@ -27,6 +29,16 @@ Copy the content of this integrations `custom_components/foxess` folder into you
 
 
 ## 💾 Configuration
+
+New installations can use **Settings > Devices & services > Add integration > FoxESS Cloud**.  Existing YAML
+installations remain supported; preserve their `deviceID` values and do not also configure them through the UI.
+The UI supports options and API-key reauthentication without replacing existing entities.
+
+Solar-only inverters normally sleep overnight.  The daylight warning timer uses one grace period after the sun
+reaches the configured wake elevation, excludes overnight time and restarts unfinished timers each morning.
+An existing warning remains until fresh data returns.  Missing readings are not replaced by synthetic zero values.
+See the [configuration and night-behaviour guidance](https://github.com/teh-hippo/foxess-ha#solar-only-night-behaviour)
+for the options and data-freshness behaviour.
 
 Edit your home-assistant `/configuration.yaml`  and add:
 
@@ -123,7 +135,7 @@ Residual Energy | kWh
 minSoC | %
 minSoC on Grid | %
 Power Factor | %
-API Response Time | mS
+API Response Time | ms
 
 💡 If you want to understand energy generation per string check out this wiki [article](https://github.com/macxq/foxess-ha/wiki/Understand-PV-string-power-generation-using-foxess-ha)
 
@@ -164,10 +176,10 @@ The integration paces the number of API calls that are made, with the following 
 - Site status and plant details - every 15 minutes
 - Real time variables - every 5 minutes
 - Cumulative total reports (generation, feedin, gridConsumption, BatterychargeTotal, Batterydischargetotal, home load) - every 15 minutes
-- Daily Generation report (Daily Energy Generated - 'total yield') - every 30 minutes
-- Battery minSoC settings - every 30 minutes
+- Daily Generation report (Daily Energy Generated - 'total yield') - every 60 minutes
+- Battery minSoC settings - every 60 minutes
 
-The integration is using approximately 24 API calls an hour (576 a day and well within the 1,440).
+The normal schedule uses approximately 22 API calls an hour (528 a day); confirmed solar-only sleep reduces this.
 
 If you have multiple inverters in your account, you will receive 1,440 calls per inverter, so for 2 inverters you will have 2,880 api calls.
 

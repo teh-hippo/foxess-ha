@@ -6,8 +6,12 @@ from datetime import datetime
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from custom_components.foxess.sensor import (
+    FoxESSEnergyGenerated,
     FoxESSEnergySolar,
+    FoxESSInverter,
     FoxESSSolarPower,
     FoxESSStatus,
     _solar_elevation,
@@ -65,7 +69,36 @@ def test_solar_power_returns_none_when_offline() -> None:
     assert entity.native_value is None
 
 
-async def test_solar_elevation_is_dst_safe(hass) -> None:
+@pytest.mark.parametrize("entity_type", [FoxESSEnergySolar, FoxESSSolarPower])
+def test_missing_inputs_are_not_zero(entity_type) -> None:
+    entity = _entity(entity_type, {"online": True, "raw": {}, "report": {}, "hasBattery": False})
+    assert entity.native_value is None
+
+
+@pytest.mark.parametrize("battery", [False, True, None])
+def test_missing_battery_terms_require_confirmed_absence(battery) -> None:
+    data = {"online": True, "hasBattery": battery, "report": {"loads": 5, "feedin": 2, "gridConsumption": 1}}
+    assert _entity(FoxESSEnergySolar, data).native_value == (6 if battery is False else None)
+
+
+def test_inverter_attributes_before_detail_and_during_sleep() -> None:
+    entity = _entity(FoxESSInverter, {"online": False, "addressbook": {}})
+    assert entity.native_value is None
+    assert entity.extra_state_attributes == {"lastCloudSync": None}
+    timestamp = datetime(2026, 9, 7, 12, tzinfo=ZoneInfo("UTC"))
+    entity.coordinator.data.update(addressbook={"status": 3}, last_cloud_sync=timestamp)
+    assert entity.native_value == "off-line"
+    assert entity.extra_state_attributes["lastCloudSync"] is timestamp
+
+
+def test_missing_generation_is_unknown() -> None:
+    coordinator = MagicMock()
+    coordinator.data = {"reportDailyGeneration": {}}
+    entity = FoxESSEnergyGenerated(coordinator, "FoxESS", "LEGACY", "Cumulative", "cumulative", "cumulative")
+    assert entity.native_value is None
+
+
+async def test_solar_elevation_is_dst_safe(hass, caplog) -> None:
     hass.config.latitude = -33.87
     hass.config.longitude = 151.21
     hass.config.elevation = 20
@@ -82,3 +115,15 @@ async def test_solar_elevation_is_dst_safe(hass) -> None:
     assert _solar_elevation(hass, winter_midnight) < 0
     # Summer noon is higher than winter noon.
     assert _solar_elevation(hass, summer_noon) > _solar_elevation(hass, winter_noon)
+    for local_time in (
+        datetime(2026, 10, 4, 1, 59, tzinfo=SYD),
+        datetime(2026, 10, 4, 3, 1, tzinfo=SYD),
+        datetime(2026, 4, 5, 2, 30, tzinfo=SYD, fold=0),
+        datetime(2026, 4, 5, 2, 30, tzinfo=SYD, fold=1),
+    ):
+        assert _solar_elevation(hass, local_time) == pytest.approx(
+            _solar_elevation(hass, local_time.astimezone(ZoneInfo("UTC")))
+        )
+    assert not any(
+        record.name == "homeassistant.helpers.sun" and "deprecated" in record.getMessage() for record in caplog.records
+    )

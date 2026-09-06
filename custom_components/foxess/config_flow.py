@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
-import time
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
 )
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from .api import DeviceNotFound, async_device_details
 from .const import (
     CONF_APIKEY,
     CONF_DEVICEID,
@@ -32,8 +32,6 @@ from .const import (
     DEFAULT_WAKE_ELEVATION,
     DEFAULT_WAKE_GRACE_MINUTES,
     DOMAIN,
-    ENDPOINT_OA_DEVICE_DETAIL,
-    ENDPOINT_OA_DOMAIN,
 )
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -41,56 +39,21 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_APIKEY): str,
         vol.Required(CONF_DEVICESN): str,
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
+        vol.Optional(CONF_EVO, default=False): bool,
     }
 )
 
 
-def _build_foxess_headers(api_key: str, path: str) -> dict[str, str]:
-    """Build authentication headers for the FoxESS OpenAPI."""
-    timestamp = str(int(time.time() * 1000))
-    # Uses literal \r\n (raw string), matching GetAuth in sensor.py
-    signature_text = rf"{path}\r\n{api_key}\r\n{timestamp}"
-    signature = hashlib.md5(signature_text.encode()).hexdigest()  # noqa: S324 — FoxESS API requires MD5
-    return {
-        "token": api_key,
-        "timestamp": timestamp,
-        "signature": signature,
-        "lang": "en",
-        "Content-Type": "application/json",
-    }
-
-
-async def _validate_api(session: aiohttp.ClientSession, api_key: str, device_sn: str) -> dict[str, Any]:
-    """Validate credentials by calling the FoxESS device detail endpoint."""
-    path = ENDPOINT_OA_DEVICE_DETAIL
-    url = f"{ENDPOINT_OA_DOMAIN}{path}?sn={device_sn}"
-    headers = _build_foxess_headers(api_key, path)
-
+async def _validate_api(hass, api_key: str, device_sn: str, *, evo=False) -> dict[str, Any]:
+    """Validate credentials using the configured inverter's lookup path."""
     try:
-        async with session.get(url, headers=headers, ssl=False) as resp:
-            if resp.status == 401:
-                raise ValueError("invalid_auth")
-            if resp.status != 200:
-                raise ValueError("cannot_connect")
-            data = await resp.json()
-    except (aiohttp.ClientError, TimeoutError) as err:
+        return await async_device_details(hass, api_key, device_sn, evo=evo)
+    except DeviceNotFound as err:
+        raise ValueError("device_not_found") from err
+    except ConfigEntryAuthFailed as err:
+        raise ValueError("invalid_auth") from err
+    except UpdateFailed as err:
         raise ValueError("cannot_connect") from err
-
-    errno = data.get("errno", -1)
-    if errno != 0:
-        msg = data.get("msg", "").lower()
-        if errno in (41807, 41808, 41809, 40256) or "token" in msg or "sign" in msg:
-            raise ValueError("invalid_auth")
-        if errno in (41930, 40261, 40257) or "device" in msg:
-            raise ValueError("device_not_found")
-        if errno == 40400:
-            raise ValueError("cannot_connect")
-        raise ValueError("unknown")
-
-    result = data.get("result")
-    if result is None:
-        raise ValueError("unknown")
-    return result
 
 
 class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -100,27 +63,27 @@ class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step."""
-        # Abort if YAML platform is already configured
-        for state in self.hass.states.async_all("sensor"):
-            if state.entity_id.startswith("sensor.foxess_"):
-                return self.async_abort(reason="yaml_in_use")
+        if self.hass.data.get(DOMAIN, {}).get("yaml_configured") or any(
+            entity.platform == DOMAIN and entity.config_entry_id is None
+            for entity in er.async_get(self.hass).entities.values()
+        ):
+            return self.async_abort(reason="yaml_in_use")
 
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            api_key = user_input[CONF_APIKEY]
-            device_sn = user_input[CONF_DEVICESN]
+            api_key = user_input[CONF_APIKEY].strip()
+            device_sn = user_input[CONF_DEVICESN].strip()
             name = user_input.get(CONF_NAME, DEFAULT_NAME)
+            evo = user_input.get(CONF_EVO, False)
 
-            session = async_get_clientsession(self.hass)
+            await self.async_set_unique_id(device_sn)
+            self._abort_if_unique_id_configured()
             try:
-                result = await _validate_api(session, api_key, device_sn)
+                result = await _validate_api(self.hass, api_key, device_sn, evo=evo)
             except ValueError as err:
                 errors["base"] = str(err)
             else:
-                await self.async_set_unique_id(device_sn)
-                self._abort_if_unique_id_configured()
-
                 return self.async_create_entry(
                     title=f"{name} ({device_sn})",
                     data={
@@ -128,17 +91,39 @@ class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_DEVICESN: device_sn,
                         CONF_DEVICEID: device_sn,
                         CONF_NAME: name,
-                        CONF_HAS_BATTERY: bool(result.get("hasBattery")),
+                        CONF_HAS_BATTERY: result["hasBattery"],
                     },
                     options={
                         CONF_EXTPV: False,
-                        CONF_EVO: False,
+                        CONF_EVO: evo,
                     },
                 )
 
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        entry = self._get_reauth_entry()
+        errors = {}
+        if user_input is not None:
+            api_key = user_input[CONF_APIKEY].strip()
+            try:
+                await _validate_api(
+                    self.hass, api_key, entry.data[CONF_DEVICESN], evo=entry.options.get(CONF_EVO, False)
+                )
+            except ValueError as err:
+                errors["base"] = str(err)
+            else:
+                return self.async_update_reload_and_abort(entry, data_updates={CONF_APIKEY: api_key})
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_APIKEY): str}),
             errors=errors,
         )
 
@@ -154,28 +139,17 @@ class FoxESSOptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-
         options = self.config_entry.options
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_EXTPV,
-                        default=options.get(CONF_EXTPV, False),
-                    ): bool,
-                    vol.Optional(
-                        CONF_EVO,
-                        default=options.get(CONF_EVO, False),
-                    ): bool,
-                    vol.Optional(
-                        CONF_WAKE_ELEVATION,
-                        default=options.get(CONF_WAKE_ELEVATION, DEFAULT_WAKE_ELEVATION),
-                    ): NumberSelector(NumberSelectorConfig(min=-6, max=15, step=0.5, mode=NumberSelectorMode.BOX)),
-                    vol.Optional(
-                        CONF_WAKE_GRACE,
-                        default=options.get(CONF_WAKE_GRACE, DEFAULT_WAKE_GRACE_MINUTES),
-                    ): NumberSelector(NumberSelectorConfig(min=0, max=180, step=5, mode=NumberSelectorMode.BOX)),
-                }
-            ),
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_EXTPV, default=options.get(CONF_EXTPV, False)): bool,
+                vol.Optional(CONF_EVO, default=options.get(CONF_EVO, False)): bool,
+                vol.Optional(
+                    CONF_WAKE_ELEVATION, default=options.get(CONF_WAKE_ELEVATION, DEFAULT_WAKE_ELEVATION)
+                ): NumberSelector(NumberSelectorConfig(min=-6, max=15, step=0.5, mode=NumberSelectorMode.BOX)),
+                vol.Optional(
+                    CONF_WAKE_GRACE, default=options.get(CONF_WAKE_GRACE, DEFAULT_WAKE_GRACE_MINUTES)
+                ): NumberSelector(NumberSelectorConfig(min=0, max=180, step=5, mode=NumberSelectorMode.BOX)),
+            }
         )
+        return self.async_show_form(step_id="init", data_schema=schema)

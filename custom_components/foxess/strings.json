@@ -7,7 +7,15 @@
         "data": {
           "apiKey": "API Key",
           "deviceSN": "Device Serial Number",
-          "name": "Name"
+          "name": "Name",
+          "Evo": "Evo series inverter"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect FoxESS Cloud",
+        "description": "Enter a replacement OpenAPI key for the configured inverter.",
+        "data": {
+          "apiKey": "API Key"
         }
       }
     },
@@ -19,7 +27,8 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "yaml_in_use": "This integration is configured via YAML. Remove the sensor platform entry from configuration.yaml first."
+      "yaml_in_use": "This integration is configured via YAML. Keep its deviceID unchanged to preserve entity history; do not add it again through the UI.",
+      "reauth_successful": "The API key was updated successfully."
     }
   },
   "options": {
@@ -33,7 +42,7 @@
         },
         "data_description": {
           "wake_elevation": "Solar elevation above which a PV-only inverter is expected to be online; below this it sleeps without raising an issue.",
-          "wake_grace_minutes": "How long the inverter may stay offline once the sun is up before a Repairs issue is raised."
+          "wake_grace_minutes": "One continuous daylight allowance for missing data after the sun reaches the wake elevation. An unfinished timer resets overnight; existing warnings remain until fresh data returns."
         }
       }
     }
@@ -51,8 +60,12 @@
   },
   "issues": {
     "data_unavailable": {
-      "title": "FoxESS inverter {device_sn} offline while the sun is up",
-      "description": "The inverter **{device_sn}** has stayed offline for over {grace} minutes even though the sun is above {elevation}° (its expected operating elevation).\n\nCheck that the WiFi datalogger is connected and able to reach the FoxESS cloud. If using a local relay, verify the DNAT rule is correctly configured."
+      "title": "FoxESS data missing during expected daylight for {device_sn}",
+      "description": "No fresh readings were available from **{device_sn}** for {grace} minutes while the sun was at or above {elevation} degrees. Normal overnight shutdown does not count towards this allowance.\n\nThis warning remains until fresh readings return, including overnight. Check the inverter, datalogger connectivity and FoxESS Cloud availability."
+    },
+    "data_unavailable_battery": {
+      "title": "FoxESS data missing for {device_sn}",
+      "description": "No fresh readings were available from **{device_sn}** for {grace} minutes. An inverter with a battery is expected to report throughout the day and night.\n\nCheck the inverter, datalogger connectivity and FoxESS Cloud availability. This warning clears when fresh readings return."
     }
   }
 }

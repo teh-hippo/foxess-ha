@@ -11,7 +11,10 @@
 
 ## ⚙️ Installation & ♻️ Update
 
-Use hacs.io to manage the installation and update process. Right now this integration is part of HACS by default - no more neeed to add it by custom repositories 🥳
+This fork requires **Home Assistant Core 2026.7 or newer**.  In HACS, add
+[`teh-hippo/foxess-ha`](https://github.com/teh-hippo/foxess-ha) as a custom repository with the **Integration** category,
+then download FoxESS and restart Home Assistant.  The default HACS catalogue entry installs the upstream integration,
+not this fork.
 
 ## ⌨️ Manual installation 
 
@@ -22,6 +25,16 @@ Copy the content of this integrations `custom_components/foxess` folder into you
 
 
 ## 💾 Configuration
+
+For a new installation, open **Settings > Devices & services > Add integration > FoxESS Cloud** and enter your
+OpenAPI key and inverter serial number.  Select Evo during setup if applicable.  Configure extended PV support and daylight settings through the
+integration's options.  If the API key expires or is replaced, use the integration's reauthentication prompt;
+this updates the existing entry without replacing its entities.
+
+### Existing YAML installations
+
+YAML configuration remains supported.  Keep the existing `deviceID` unchanged to preserve entity identity and
+history.  Do not add a second UI configuration for a YAML-configured installation.
 
 Edit your home-assistant `/configuration.yaml`  and add:
 
@@ -85,6 +98,25 @@ sensor:
  
 
 
+
+## Solar-only night behaviour
+
+A solar-only inverter normally turns off overnight.  Its diagnostic status becomes `asleep`, and cloud polling is
+suspended once an offline state is confirmed and the sun has stayed below the configured wake elevation for the
+offload grace window.  An unconfirmed connection failure alone does not enable night offload.
+
+The default wake elevation is 5 degrees and the default grace is 60 minutes.  When the sun reaches that elevation,
+one continuous daylight grace period is allowed for fresh readings to return.  Overnight time never counts towards
+that period.  An unfinished timer resets at night, but an already-raised Repairs warning remains until fresh readings
+return.  Inverters with batteries are monitored throughout the day and night.
+
+For YAML, the equivalent options are `wake_elevation` (from -6 to 15 degrees) and `wake_grace_minutes` (from 0 to
+180 minutes).  Zero grace raises a warning immediately during expected operating hours.  An explicit `hasBattery`
+setting overrides automatic detection.
+
+Missing measurements are not converted to zero.  Instantaneous readings become unknown or unavailable when no usable
+data exists; genuine cumulative totals can remain cached during expected sleep.  The inverter's `lastCloudSync`
+attribute is the last accepted cloud sample timestamp, not the time Home Assistant last polled or displayed it.
 
 ## 📊 Provided entities
 
@@ -152,7 +184,7 @@ Residual Energy | kWh
 minSoC | %
 minSoC on Grid | %
 Power Factor | %
-API Response Time | mS
+API Response Time | ms
 Running State | string `163: on-grid` (see **Table1**)
 
 **Table1** Possible Running States

@@ -12,13 +12,9 @@ OFFLINE = "offline"
 OPERATIONAL_STATES = [ONLINE, ASLEEP, OFFLINE]
 
 
-def expected_online(elevation_now: float, elevation_grace_ago: float, wake_elevation: float) -> bool:
-    """Return True when the sun has been above ``wake_elevation`` for the whole grace window.
-
-    During the monotonic morning rise, both samples being above the threshold means the
-    sun crossed it at least ``grace`` minutes ago, so the inverter is expected to have woken.
-    """
-    return elevation_now >= wake_elevation and elevation_grace_ago >= wake_elevation
+def expected_online(elevation_now: float, wake_elevation: float) -> bool:
+    """Return whether daylight outage time may accrue, before applying the single grace."""
+    return elevation_now >= wake_elevation
 
 
 def operational_state(online: bool, pv_only: bool, is_expected_online: bool) -> str:

@@ -17,18 +17,16 @@ from custom_components.foxess.sun_state import (
 
 
 @pytest.mark.parametrize(
-    ("elev_now", "elev_grace_ago", "wake", "expected"),
+    ("elev_now", "wake", "expected"),
     [
-        (10.0, 10.0, 5.0, True),  # both above -> sun up for the whole grace window
-        (10.0, 2.0, 5.0, False),  # only now above -> sun crossed less than grace ago
-        (2.0, 10.0, 5.0, False),  # only grace-ago above -> sun on the way down
-        (2.0, 2.0, 5.0, False),  # both below -> night
-        (5.0, 5.0, 5.0, True),  # exactly at the threshold (>=)
-        (4.99, 5.0, 5.0, False),  # just below now
+        (10.0, 5.0, True),
+        (2.0, 5.0, False),
+        (5.0, 5.0, True),
+        (4.99, 5.0, False),
     ],
 )
-def test_expected_online(elev_now: float, elev_grace_ago: float, wake: float, expected: bool) -> None:
-    assert expected_online(elev_now, elev_grace_ago, wake) is expected
+def test_expected_online(elev_now: float, wake: float, expected: bool) -> None:
+    assert expected_online(elev_now, wake) is expected
 
 
 @pytest.mark.parametrize(

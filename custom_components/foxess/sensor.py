@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
 import logging
-import time
+import math
 from collections import namedtuple
 from datetime import datetime, timedelta
 
-import aiohttp
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-from dateutil import parser
+from astral.sun import elevation
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA,
     SensorDeviceClass,
@@ -32,18 +28,21 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfReactivePower,
     UnitOfTemperature,
+    UnitOfTime,
 )
+from homeassistant.exceptions import ConfigEntryAuthFailed, PlatformNotReady
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.icon import icon_for_battery_level
-from homeassistant.helpers.sun import get_astral_location
+from homeassistant.helpers.sun import get_astral_observer
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
+    UpdateFailed,
 )
 from homeassistant.util import dt as dt_util
 
+from .api import DeviceNotFound, async_device_details, async_request
 from .const import (
     CONF_APIKEY,
     CONF_DEVICEID,
@@ -70,22 +69,14 @@ from .sun_state import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_ENDPOINT_OA_DOMAIN = "https://www.foxesscloud.com"
-_ENDPOINT_OA_BATTERY_SETTINGS = "/op/v0/device/battery/soc/get?sn="
+_ENDPOINT_OA_BATTERY_SETTINGS = "/op/v0/device/battery/soc/get"
 _ENDPOINT_OA_REPORT = "/op/v0/device/report/query"
-_ENDPOINT_OA_DEVICE_DETAIL = "/op/v0/device/detail"
-_ENDPOINT_OA_DEVICE_DETAIL_V1 = "/op/v1/device/detail"
 _ENDPOINT_OA_DEVICE_VARIABLES = "/op/v0/device/real/query"
 _ENDPOINT_OA_DEVICE_VARIABLES_V1 = "/op/v1/device/real/query"
-_ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation?sn="
+_ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation"
 
 METHOD_POST = "POST"
 METHOD_GET = "GET"
-DEFAULT_ENCODING = "UTF-8"
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-DEFAULT_TIMEOUT = 75  # increase the size of inherited timeout, the API is a bit slow
 
 ATTR_DEVICE_SN = "deviceSN"
 ATTR_PLANTNAME = "plantName"
@@ -102,13 +93,7 @@ BATTERY_LEVELS = {"High": 80, "Medium": 50, "Low": 25, "Empty": 10}
 CONF_SYSTEM_ID = "system_id"
 RETRY_NEXT_SLOT = -1
 RETRY_IN_5_MINS = 25
-DNS_ERROR = 101
-
-# aiohttp 3.10+ raises a DNS-specific connector error; on older versions this
-# resolves to an empty tuple so isinstance() simply falls back to message matching.
-_DNS_CONNECTOR_ERROR = getattr(aiohttp, "ClientConnectorDNSError", ())
-
-DEFAULT_VERIFY_SSL = False  # True
+RAW_MAX_AGE = timedelta(seconds=361)
 
 SCAN_MINUTES = 1  # number of minutes betwen API requests
 SCAN_INTERVAL = timedelta(minutes=SCAN_MINUTES)
@@ -127,30 +112,30 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_V1_API): cv.boolean,
         vol.Optional(CONF_EVO): cv.boolean,
         vol.Optional(CONF_HAS_BATTERY): cv.boolean,
-        vol.Optional(CONF_WAKE_ELEVATION): vol.Coerce(float),
-        vol.Optional(CONF_WAKE_GRACE): vol.Coerce(int),
+        vol.Optional(CONF_WAKE_ELEVATION): vol.All(vol.Coerce(float), vol.Range(min=-6, max=15)),
+        vol.Optional(CONF_WAKE_GRACE): vol.All(vol.Coerce(int), vol.Range(min=0, max=180)),
     }
 )
-
-token = None
 
 
 def _solar_elevation(hass, when):
     """Return the sun's elevation in degrees at an aware datetime (DST-safe)."""
-    location, observer_elevation = get_astral_location(hass)
-    return location.solar_elevation(when, observer_elevation)
+    return elevation(get_astral_observer(hass), dateandtime=dt_util.as_utc(when))
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the FoxESS sensor."""
-    global LastHour, timeslice, last_api, RestrictGetVar, xtzone, V1_Api, Evo
-    Evo = False
+    """Set up a YAML platform, retaining its legacy entity identities."""
+    hass.data.setdefault(DOMAIN, {})["yaml_configured"] = True
+    await _async_setup_sensors(hass, config, async_add_entities)
+
+
+async def _async_setup_sensors(hass, config, async_add_entities, entry=None):
+    """Set up one inverter with independent polling state."""
     name = config.get(CONF_NAME)
     deviceID = config.get(CONF_DEVICEID)
     devicesn = config.get(CONF_DEVICESN)
     apiKey = config.get(CONF_APIKEY)
     ExtPV = config.get(CONF_EXTPV)
-    xtzone = config.get(CONF_XTZONE)
     RestrictGetVar = config.get(CONF_GET_VARIABLES)
     V1_Api = config.get(CONF_V1_API)
     Evo = config.get(CONF_EVO)
@@ -166,7 +151,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     _LOGGER.debug("Device SN: %s", devicesn)
     _LOGGER.debug("Device ID: %s", deviceID)
     _LOGGER.debug("FoxESS Scan Interval: %s minutes", SCAN_MINUTES)
-    _LOGGER.debug("Cross Time Zone: %s", xtzone)
     _LOGGER.debug("Restrict Variables: %s", RestrictGetVar)
     _LOGGER.debug("Extended PV: %s", ExtPV)
     _LOGGER.debug("v1 Api Calls: %s", V1_Api)
@@ -186,10 +170,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         _LOGGER.debug("Get Variables is full variable mode")
     else:
         _LOGGER.warning("Get Variables is in restricted mode")
-    timeslice = {}
-    timeslice[devicesn] = RETRY_NEXT_SLOT
-    last_api = 0
-    LastHour = 0
+    timeslice = RETRY_NEXT_SLOT
+    last_error = None
+    confirmed_offline = False
     allData = {
         "report": {},
         "reportDailyGeneration": {},
@@ -198,28 +181,18 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         "addressbook": {},
         "online": False,
         "operational_state": None,
+        "hasBattery": hasBatteryOverride,
+        "last_cloud_sync": None,
+        "updated_at": {},
     }
-    allData["addressbook"]["hasBattery"] = False  # assume no battery is fitted for now
-    allData["addressbook"]["status"] = "3"  # assume inverter is off-line for now
 
     staleness = {
-        "last_online_at": None,
         "offline_since_at": None,
-        "issue_raised": False,
         "detail_seen": False,
     }
 
     def _is_pv_only():
-        """Whether sun-grace applies. Config override wins; else use the detected battery.
-
-        While the battery state is still unconfirmed (no device detail yet), treat the
-        inverter as not PV-only so it is polled 24/7 rather than offloaded.
-        """
-        if hasBatteryOverride is not None:
-            return hasBatteryOverride is False
-        if not staleness["detail_seen"]:
-            return False
-        return allData["addressbook"].get("hasBattery") is False
+        return allData["hasBattery"] is False
 
     def _elevations(now):
         """Return (elevation_now, elevation_grace_ago) in degrees."""
@@ -240,198 +213,128 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         issue_id = f"data_unavailable_{devicesn}"
 
         if state == "online":
-            staleness["last_online_at"] = now
             staleness["offline_since_at"] = None
-            # Delete unconditionally so an issue raised before a restart is cleared even
-            # though the in-memory issue_raised flag was reset (no-op when absent).
             ir.async_delete_issue(hass, DOMAIN, issue_id)
-            if staleness["issue_raised"]:
-                staleness["issue_raised"] = False
-                _LOGGER.info("FoxESS data restored for %s", devicesn)
             return
-
-        if staleness["offline_since_at"] is None:
-            staleness["offline_since_at"] = now
 
         if state == "asleep":
-            return
-
-        # state == "offline": debounce so a brief daytime cloud blip does not alarm.
-        offline_minutes = (now - staleness["offline_since_at"]).total_seconds() / 60
-        if should_raise_issue(state, offline_minutes, wake_grace, staleness["issue_raised"]):
+            staleness["offline_since_at"] = None
+            offline_minutes = 0
+        else:
+            if staleness["offline_since_at"] is None:
+                staleness["offline_since_at"] = now
+            offline_minutes = (now - staleness["offline_since_at"]).total_seconds() / 60
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+        if should_raise_issue(state, offline_minutes, wake_grace, issue is not None) or (
+            issue is not None and (not issue.active or not issue.is_persistent)
+        ):
             ir.async_create_issue(
                 hass,
                 DOMAIN,
                 issue_id,
                 is_fixable=False,
+                is_persistent=True,
                 severity=ir.IssueSeverity.WARNING,
-                translation_key="data_unavailable",
+                translation_key="data_unavailable" if _is_pv_only() else "data_unavailable_battery",
                 translation_placeholders={
                     "device_sn": devicesn,
                     "elevation": str(wake_elevation),
                     "grace": str(wake_grace),
                 },
             )
-            staleness["issue_raised"] = True
-            _LOGGER.warning(
-                "FoxESS data unavailable for %s for %d+ minutes while the sun is up",
-                devicesn,
-                wake_grace,
-            )
+            if issue is None:
+                _LOGGER.warning(
+                    "FoxESS data unavailable for %s for %d+ minutes during expected operating hours",
+                    devicesn,
+                    wake_grace,
+                )
 
     async def async_update_data():
-        _LOGGER.debug("Updating data from https://www.foxesscloud.com/")
-        global token, timeslice, LastHour
+        nonlocal timeslice, last_error, confirmed_offline
         now = dt_util.utcnow()
         elev_now, elev_grace_ago = _elevations(now)
-        is_expected_online = expected_online(elev_now, elev_grace_ago, wake_elevation)
-        # Night offload: once the inverter is asleep (PV-only, offline, sun below the wake
-        # elevation for the whole grace window) suspend all cloud polling until dawn. The
-        # detail_seen guard guarantees the first poll still runs so the addressbook is
-        # populated before any offload.
-        if should_offload(
+        is_expected_online = expected_online(elev_now, wake_elevation)
+        if confirmed_offline and should_offload(
             staleness["detail_seen"], allData["online"], _is_pv_only(), elev_now, elev_grace_ago, wake_elevation
         ):
-            if staleness["offline_since_at"] is None:
-                staleness["offline_since_at"] = now
-            allData["operational_state"] = "asleep"
-            timeslice[devicesn] = RETRY_NEXT_SLOT
+            _update_status(now, is_expected_online)
+            timeslice = RETRY_NEXT_SLOT
             return allData
-        hournow = dt_util.now().strftime("%H")  # update hour now
-        _LOGGER.debug("Time now: %s, last %s", hournow, LastHour)
-        tslice = timeslice[devicesn] + 1  # increment current device time slice
-        timeslice[devicesn] = tslice
-        if tslice % 5 == 0:
-            _LOGGER.debug("Main Poll, interval: %s, %s", devicesn, timeslice[devicesn])
-            # try the openapi see if we get a response
-            geterror = False
-            if tslice % 15 == 0:
-                # get device detail at startup, then every 15 minutes to save api calls
-                if Evo:
-                    # Evo not currently in device detail, use list and fill partial blanks
-                    geterror = await getOADeviceList(hass, allData, devicesn, apiKey)
-                else:
-                    geterror = await getOADeviceDetail(hass, allData, devicesn, apiKey)
-                await asyncio.sleep(1)  # OpenAPI demand
-                if not geterror:
-                    # Addressbook is now populated; night offload is safe from here on.
+        if allData["operational_state"] == "asleep" and is_expected_online:
+            timeslice = RETRY_NEXT_SLOT
+        timeslice = (timeslice + 1) % 60
+        if allData["last_cloud_sync"] is not None and now - allData["last_cloud_sync"] > RAW_MAX_AGE:
+            allData["online"] = False
+            allData["raw"] = {}
+        if not (_is_pv_only() and not is_expected_online):
+            for section, minutes in (("report", 16), ("reportDailyGeneration", 61), ("battery", 61)):
+                updated = allData["updated_at"].get(section)
+                if updated is not None and now - updated > timedelta(minutes=minutes):
+                    allData[section] = {}
+
+        if timeslice % 5 == 0:
+            try:
+                if timeslice % 15 == 0 or confirmed_offline or not staleness["detail_seen"]:
+                    details = await async_device_details(hass, apiKey, devicesn, evo=Evo is True, v1_api=V1_Api)
+                    allData["addressbook"] = {**details, "plantName": details.get("stationName")}
+                    if not details["hasBattery"]:
+                        allData["addressbook"][ATTR_BATTERYLIST] = "No Battery"
                     staleness["detail_seen"] = True
-            if not geterror:
-                if allData["addressbook"]["status"] is not None:
-                    statetest = int(allData["addressbook"]["status"])
-                    if statetest in [3]:
-                        allData["raw"]["runningState"] = "164"  # off-grid
+                    allData["hasBattery"] = (
+                        hasBatteryOverride if hasBatteryOverride is not None else allData["addressbook"]["hasBattery"]
+                    )
+                confirmed_offline = int(allData["addressbook"]["status"]) == 3
+                if confirmed_offline:
+                    allData["online"] = False
+                    allData["raw"] = {"runningState": "164"}
                 else:
-                    statetest = 0
-                _LOGGER.debug(" Statetest %s", statetest)
-                if statetest in [1, 2]:
-                    allData["online"] = True
-                    if tslice == 0:
-                        # read in battery settings if fitted at startup, then every 60 mins
-                        await getOABatterySettings(hass, allData, devicesn, apiKey)
-                        await asyncio.sleep(1)  # OpenAPI demand
-                    # main real time data fetch, followed by reports
-                    geterror = await getRaw(hass, allData, apiKey, devicesn)
-                    if not geterror:
-                        if tslice % 15 == 0:  # do at startup and every 15 minutes
-                            await asyncio.sleep(1)  # OpenAPI demand limit
-                            geterror = await getReport(hass, allData, apiKey, devicesn)
-                            if not geterror:
-                                if tslice == 0:
-                                    # get daily generation at startup, then every 60 minutes
-                                    await asyncio.sleep(1)  # OpenAPI demand
-                                    geterror = await getReportDailyGeneration(hass, allData, apiKey, devicesn)
-                                    if geterror:
-                                        _LOGGER.debug("getReportDailyGeneration False")
-                            else:
-                                _LOGGER.debug("getReport False")
-                            if geterror:
-                                geterror = False
-                                allData["online"] = False
-                                tslice = RETRY_IN_5_MINS  # retry in 5 minutes
-                    else:
-                        _LOGGER.debug("get variables failed")
-                        if statetest == 2:
-                            # The inverter is in alarm, don't check every minute
-                            _LOGGER.debug(
-                                "Inverter in alarm, slowing retry response for SN: %s",
-                                devicesn,
-                            )
-                            allData["online"] = False
-                            tslice = RETRY_IN_5_MINS  # retry in 5 minutes
-                        else:
-                            if geterror == DNS_ERROR:
-                                _LOGGER.warning("Fox Cloud - DNS fail, retry in 1 minute")
-                                # retry in 1 minute
-                                if tslice != 0:
-                                    tslice = tslice - 1
-                                else:
-                                    tslice = RETRY_NEXT_SLOT
-                            else:
-                                # The get variables api call failed, leave it 5 minutes
-                                _LOGGER.debug("slowing retry response for SN: %s", devicesn)
-                                allData["online"] = False
-                                tslice = RETRY_IN_5_MINS  # retry in 5 minutes
-                        geterror = False
-                else:
-                    if statetest == 3:
-                        # The inverter is off-line, no raw data polling, don't update entities
-                        # retry device detail call every 5 minutes until it comes back on-line
-                        allData["online"] = False
-                        tslice = RETRY_IN_5_MINS  # retry in 5 minutes
-                        _LOGGER.debug("Inverter off-line for SN: %s", devicesn)
-
-                if not allData["online"]:
-                    if not geterror:
-                        hasBat = allData["addressbook"].get("hasBattery", True)
-                        if not hasBat:
-                            _LOGGER.debug("%s Inverter off-line, no battery fitted", name)
-                        else:
-                            _LOGGER.warning("%s Inverter is off-line, waiting to retry", name)
-                    else:
-                        _LOGGER.warning("%s Cloud timeout, retry in 1 minute", name)
-            else:
-                _LOGGER.warning("%s Cloud timeout on Device Detail, retry in 1 minute.", name)
-
-            if geterror is not False:
+                    await getRaw(hass, allData, apiKey, devicesn, v1_api=V1_Api, restrict=RestrictGetVar)
+                    confirmed_offline = not allData["online"]
+                last_error = None
+            except (UpdateFailed, ConfigEntryAuthFailed) as err:
+                confirmed_offline = False
                 allData["online"] = False
-                if tslice != 0:
-                    tslice = tslice - 1
-                    # failed to get specific detail so retry slot in 1 minute
-                else:
-                    tslice = RETRY_NEXT_SLOT  # failed to get full data, try again in 1 minute
+                allData["raw"] = {}
+                timeslice = RETRY_IN_5_MINS
+                last_error = err
 
-        # actions here are every minute
-        if tslice >= 59:
-            tslice = RETRY_NEXT_SLOT  # reset timeslot, ready for full data fetch at 0
-        _LOGGER.debug("Auxilliary timeslice %s, %s", devicesn, tslice)
+            if last_error is None and allData["online"]:
+                queries = []
+                if timeslice % 15 == 0:
+                    queries.append(("report", getReport))
+                if timeslice == 0:
+                    queries.append(("reportDailyGeneration", getReportDailyGeneration))
+                    queries.append(("battery", getOABatterySettings))
+                for section, query in queries:
+                    try:
+                        await query(hass, allData, apiKey, devicesn)
+                    except UpdateFailed as err:
+                        allData[section] = {}
+                        _LOGGER.warning("FoxESS %s update failed: %s", section, err)
+                    else:
+                        allData["updated_at"][section] = dt_util.utcnow()
 
-        if LastHour != hournow:
-            LastHour = hournow  # update the hour the last poll was run
-
-        timeslice[devicesn] = tslice
-
-        _LOGGER.debug(allData)
-
-        _update_status(now, is_expected_online)
-
+        _update_status(dt_util.utcnow(), is_expected_online)
+        if last_error is not None:
+            raise last_error
         return allData
 
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        # Name of the data. For logging purposes.
-        name=DEFAULT_NAME,
+        name=name,
+        config_entry=entry,
         update_method=async_update_data,
-        # Polling interval. Will only be polled if there are subscribers.
         update_interval=SCAN_INTERVAL,
     )
 
-    await coordinator.async_refresh()
-
-    if not coordinator.last_update_success:
-        _LOGGER.error("FoxESS Cloud initialisation failed, Fatal Error - correct error and restart Home Assistant")
-        return False
+    if entry is not None:
+        await coordinator.async_config_entry_first_refresh()
+    else:
+        await coordinator.async_refresh()
+        if not coordinator.last_update_success:
+            await coordinator.async_shutdown()
+            raise PlatformNotReady("Unable to initialise FoxESS Cloud") from coordinator.last_exception
 
     if hasBatteryOverride is not None:
         hasBattery = hasBatteryOverride
@@ -770,6 +673,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up FoxESS sensor from a config entry."""
+    async_add_entities(entry.runtime_data)
+
+
+async def async_prepare_entry(hass, entry):
+    """Fetch initial data before Home Assistant forwards platform setup."""
     config = {
         CONF_NAME: entry.data.get(CONF_NAME, DEFAULT_NAME),
         CONF_DEVICEID: entry.data[CONF_DEVICEID],
@@ -780,557 +688,148 @@ async def async_setup_entry(hass, entry, async_add_entities):
         CONF_EVO: entry.options.get(CONF_EVO, False),
         CONF_WAKE_ELEVATION: entry.options.get(CONF_WAKE_ELEVATION, DEFAULT_WAKE_ELEVATION),
         CONF_WAKE_GRACE: entry.options.get(CONF_WAKE_GRACE, DEFAULT_WAKE_GRACE_MINUTES),
-        CONF_XTZONE: False,
         CONF_GET_VARIABLES: False,
         CONF_V1_API: True,
     }
-    await async_setup_platform(hass, config, async_add_entities)
+    entities = []
+    await _async_setup_sensors(hass, config, entities.extend, entry)
+    return entities
 
 
-class GetAuth:
-    def get_signature(self, token, path, lang="en"):
-        """
-        This function is used to generate a signature consisting of URL, token, and timestamp, and return a dictionary containing the signature and other information.
-            :param token: your key
-            :param path:  your request path
-            :param lang: language, default is English.
-            :return: with authentication header
-        """
-        timestamp = round(time.time() * 1000)
-        signature = rf"{path}\r\n{token}\r\n{timestamp}"
-        # or use user_agent_rotator.get_random_user_agent() for user-agent
-        result = {
-            "token": token,
-            "lang": lang,
-            "timestamp": str(timestamp),
-            "Content-Type": "application/json",
-            "signature": self.md5c(text=signature),
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/117.0.0.0 Safari/537.36",
-            "Connection": "close",
-        }
-
-        return result
-
-    @staticmethod
-    def md5c(text="", _type="lower"):
-        res = hashlib.md5(text.encode(encoding="UTF-8")).hexdigest()
-        if _type.__eq__("lower"):
-            return res
-        else:
-            return res.upper()
+def _number(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+        raise UpdateFailed("FoxESS returned a non-numeric measurement")
+    return value
 
 
-async def waitforAPI():
-    global last_api
-    # wait for openAPI, there is a minimum of 1 second allowed between OpenAPI query calls
-    # check if last_api call was less than a second ago and if so delay the balance of 1 second
-    now = time.time()
-    last = last_api
-    diff = now - last if last != 0 else 1
-    diff = round((diff + 0.2), 2)
-    if diff < 1:
-        await asyncio.sleep(diff)
-        _LOGGER.debug("API enforced delay, wait: %s", diff)
-    now = time.time()
-    last_api = now
-    return False
-
-
-async def _async_api_fetch(hass, method, url, headers, data=None):
-    """Fetch a FoxESS Cloud endpoint, returning (response_text, exception)."""
-    session = async_get_clientsession(hass, verify_ssl=DEFAULT_VERIFY_SSL)
-    try:
-        async with session.request(
-            method,
-            url,
-            headers=headers,
-            data=data,
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
-        ) as response:
-            return await response.text(encoding=DEFAULT_ENCODING), None
-    except (aiohttp.ClientError, TimeoutError) as err:
-        return None, err
-
-
-async def getOADeviceDetail(hass, allData, devicesn, apiKey):
-    await waitforAPI()
-
-    if V1_Api:
-        path = _ENDPOINT_OA_DEVICE_DETAIL_V1
-        _LOGGER.debug("Device Detail using V1 API")
-    else:
-        path = _ENDPOINT_OA_DEVICE_DETAIL
-
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + path + "?sn="
-    _LOGGER.debug("OADevice Detail fetch %s%s", path, devicesn)
-    timestamp = round(time.time() * 1000)
-
-    detailText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData)
-
-    if detailText is None or detailText == "":
-        _LOGGER.debug("Unable to get OA Device Detail from FoxESS Cloud")
-        return True
-    else:
-        response = json.loads(detailText)
-        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            ResponseTime = round(time.time() * 1000) - timestamp
-            if ResponseTime > 0:
-                allData["raw"]["ResponseTime"] = ResponseTime
-            else:
-                allData["raw"]["ResponseTime"] = 0
-            _LOGGER.debug("OA Device Detail Good Response: %s", response["result"])
-            result = response["result"]
-            allData["addressbook"] = result
-            # manually poke this in as on the old cloud it was called plantname, need to keep in line with old entity name
-            plantName = result["stationName"]
-            allData["addressbook"]["plantName"] = plantName
-            testBattery = result["hasBattery"]
-            if testBattery:
-                _LOGGER.debug("OA Device Detail System has Battery: %s", testBattery)
-            else:
-                _LOGGER.debug("OA Device Detail System has No Battery: %s", testBattery)
-                allData["addressbook"][ATTR_BATTERYLIST] = "No Battery"
-            return False
-        else:
-            _LOGGER.error("OA Device Detail Bad Response: %s", response)
-            return True
-
-
-async def getOADeviceList(hass, allData, devicesn, apiKey):
-    await waitforAPI()
-
-    path = "/op/v0/device/list"
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + "/op/v0/device/list"
-    _LOGGER.debug("OADevice List fetch %s%s", path, devicesn)
-    timestamp = round(time.time() * 1000)
-
-    listData = '{ "currentPage": 1, "pageSize": 10}'
-
-    listText, _ = await _async_api_fetch(hass, METHOD_POST, path, headerData, listData)
-
-    if listText is None or listText == "":
-        _LOGGER.debug("Unable to get OA Device List from FoxESS Cloud")
-        return True
-    else:
-        response = json.loads(listText)
-        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            ResponseTime = round(time.time() * 1000) - timestamp
-            if ResponseTime > 0:
-                allData["raw"]["ResponseTime"] = ResponseTime
-            else:
-                allData["raw"]["ResponseTime"] = 0
-            _LOGGER.debug("OA Device List Good Response: %s", response["result"])
-            result = json.loads(listText)["result"]["data"]
-            for item in result:
-                item["stationName"]
-                _LOGGER.debug("OA Device List item: %s", item)
-                break
-            allData["addressbook"] = item
-            plantName = item["stationName"]
-            allData["addressbook"]["plantName"] = plantName
-            allData["addressbook"]["masterVersion"] = "not provided"
-            allData["addressbook"]["managerVersion"] = "not provided"
-            allData["addressbook"]["slaveVersion"] = "not provided"
-            allData["addressbook"]["batteryList"] = "not provided"
-            testBattery = item["hasBattery"]
-            if testBattery:
-                _LOGGER.debug("OA Device List System has Battery: %s", testBattery)
-            else:
-                _LOGGER.debug("OA Device List System has No Battery: %s", testBattery)
-                allData["addressbook"][ATTR_BATTERYLIST] = "No Battery"
-
-            return False
-        else:
-            _LOGGER.error("OA Device List Bad Response: %s", response)
-            return True
-
-
-async def getOABatterySettings(hass, allData, devicesn, apiKey):
-    await waitforAPI()  # check for api delay
-
-    path = "/op/v0/device/battery/soc/get"
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_BATTERY_SETTINGS
-    if "hasBattery" not in allData["addressbook"]:
-        hasBattery = False
-    else:
-        hasBattery = allData["addressbook"]["hasBattery"]
-
-    if hasBattery:
-        # only make this call if device detail reports battery fitted
-        _LOGGER.debug("OABattery Settings fetch %s %s", path, devicesn)
-        batteryText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData)
-
-        if batteryText is None:
-            _LOGGER.debug("Unable to get OA Battery Settings from FoxESS Cloud")
-            return True
-        else:
-            response = json.loads(batteryText)
-            if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-                _LOGGER.debug("OA Battery Settings Good Response: %s", response["result"])
-                result = response["result"]
-                minSoc = result["minSoc"]
-                minSocOnGrid = result["minSocOnGrid"]
-                allData["battery"]["minSoc"] = minSoc
-                allData["battery"]["minSocOnGrid"] = minSocOnGrid
-                _LOGGER.debug(
-                    "OA Battery Settings read MinSoc: %d, MinSocOnGrid: %d",
-                    minSoc,
-                    minSocOnGrid,
-                )
-                return False
-            else:
-                _LOGGER.error("OA Battery Settings Bad Response: %s", response)
-                return True
-    else:
-        # device detail reports no battery fitted so reset these variables to show unknown
-        allData["battery"]["minSoc"] = None
-        allData["battery"]["minSocOnGrid"] = None
-        return False
+async def getOABatterySettings(hass, allData, apiKey, devicesn):
+    if allData["hasBattery"] is False:
+        allData["battery"] = {}
+        return
+    result, _ = await async_request(hass, METHOD_GET, _ENDPOINT_OA_BATTERY_SETTINGS, apiKey, params={"sn": devicesn})
+    if not isinstance(result, dict):
+        raise UpdateFailed("FoxESS returned invalid battery settings")
+    allData["battery"] = {
+        key: _number(result[key]) for key in ("minSoc", "minSocOnGrid") if result.get(key) is not None
+    }
 
 
 async def getReport(hass, allData, apiKey, devicesn):
-    await waitforAPI()  # check for api delay
-
-    path = _ENDPOINT_OA_REPORT
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_REPORT
-    _LOGGER.debug("OA Report fetch %s ", path)
-
     now = dt_util.now()
-    month = str(now.month)  # local month for the report query
-
-    reportData = (
-        '{"sn":"'
-        + devicesn
-        + '","year":'
-        + now.strftime("%Y")
-        + ',"month":'
-        + month
-        + ',"dimension":"month","variables":["feedin","generation","gridConsumption","chargeEnergyToTal","dischargeEnergyToTal","loads","PVEnergyTotal"]}'
+    result, _ = await async_request(
+        hass,
+        METHOD_POST,
+        _ENDPOINT_OA_REPORT,
+        apiKey,
+        payload={
+            "sn": devicesn,
+            "year": now.year,
+            "month": now.month,
+            "dimension": "month",
+            "variables": [
+                "feedin",
+                "generation",
+                "gridConsumption",
+                "chargeEnergyToTal",
+                "dischargeEnergyToTal",
+                "loads",
+                "PVEnergyTotal",
+            ],
+        },
     )
-
-    _LOGGER.debug("getReport OA request: %s", reportData)
-
-    reportText, _ = await _async_api_fetch(hass, METHOD_POST, path, headerData, reportData)
-
-    if reportText is None or reportText == "":
-        _LOGGER.debug("Unable to get OA Report from FoxESS Cloud")
-        return True
-    else:
-        # Openapi responded so process data
-        response = json.loads(reportText)
-        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            _LOGGER.debug("OA Report Data fetched OK: %s %s ", response, reportText[:350])
-            result = json.loads(reportText)["result"]
-            today = int(now.strftime("%d"))  # need today as an integer to locate in the monthly report index
-            for item in result:
-                variableName = item["variable"]
-                # Daily reports break down the data hour by month for each day
-                # so locate the current days index and use that as the sum
-                index = 1
-                cumulative_total = 0
-                for dataItem in item["values"]:
-                    if today == index:  # we're only interested in the total for today
-                        if dataItem is not None:
-                            cumulative_total = dataItem
-                        else:
-                            _LOGGER.debug("Report month fetch, None received")
-                        break
-                    index += 1
-                    # cumulative_total += dataItem
-                allData["report"][variableName] = round(cumulative_total, 3)
-                _LOGGER.debug("OA Report Variable: %s, Total: %s", variableName, cumulative_total)
-            return False
-        else:
-            _LOGGER.debug("OA Report Bad Response: %s %s ", response, reportText)
-            return True
+    if not isinstance(result, list):
+        raise UpdateFailed("FoxESS returned an invalid energy report")
+    report = {}
+    for item in result:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("variable"), str)
+            or not isinstance(item.get("values"), list)
+        ):
+            raise UpdateFailed("FoxESS returned an invalid energy report item")
+        value = _number(item["values"][now.day - 1]) if len(item["values"]) >= now.day else None
+        if value is not None:
+            report[item["variable"]] = round(value, 3)
+    allData["report"] = report
 
 
 async def getReportDailyGeneration(hass, allData, apiKey, devicesn):
-    await waitforAPI()  # check for api delay
-
-    path = "/op/v0/device/generation"
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_DAILY_GENERATION
-    _LOGGER.debug("getReportDailyGeneration fetch %s ", path)
-
-    generationData = '{"sn":"' + devicesn + '","dimension":"day"}'
-
-    _LOGGER.debug("getReportDailyGeneration OA request: %s", generationData)
-
-    genText, _ = await _async_api_fetch(hass, METHOD_GET, path + devicesn, headerData, generationData)
-
-    if genText is None or genText == "":
-        _LOGGER.debug("Unable to get OA Daily Generation Report from FoxESS Cloud")
-        return True
-    else:
-        response = json.loads(genText)
-        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            _LOGGER.debug(
-                "OA Daily Generation Report Data fetched OK Response: %s",
-                genText[:500],
-            )
-
-            parsed = json.loads(genText)["result"]
-            if "today" not in parsed:
-                allData["reportDailyGeneration"]["value"] = 0
-                _LOGGER.debug(
-                    "OA Daily Generation Report data, today has no value: %s set to 0",
-                    parsed,
-                )
-            else:
-                allData["reportDailyGeneration"]["value"] = parsed["today"]
-                _LOGGER.debug("OA Daily Generation Report data: todays value %s ", parsed["today"])
-            if "month" not in parsed:
-                allData["reportDailyGeneration"]["month"] = 0
-                _LOGGER.debug(
-                    "OA Daily Generation Report data, month has no value: %s set to 0",
-                    parsed,
-                )
-            else:
-                allData["reportDailyGeneration"]["month"] = parsed["month"]
-                _LOGGER.debug("OA Daily Generation Report data: month value %s ", parsed["month"])
-            if "cumulative" not in parsed:
-                allData["reportDailyGeneration"]["cumulative"] = 0
-                _LOGGER.debug(
-                    "OA Daily Generation Report data, cumulative has no value: %s set to 0",
-                    parsed,
-                )
-            else:
-                allData["reportDailyGeneration"]["cumulative"] = parsed["cumulative"]
-                _LOGGER.debug(
-                    "OA Daily Generation Report data: cumulative value %s ",
-                    parsed["cumulative"],
-                )
-            return False
-        else:
-            _LOGGER.debug(
-                "OA Daily Generation Report Bad Response: %s %s ",
-                response,
-                genText,
-            )
-            return True
+    result, _ = await async_request(hass, METHOD_GET, _ENDPOINT_OA_DAILY_GENERATION, apiKey, params={"sn": devicesn})
+    if not isinstance(result, dict):
+        raise UpdateFailed("FoxESS returned invalid generation data")
+    allData["reportDailyGeneration"] = {
+        key: _number(result[source])
+        for key, source in (("value", "today"), ("month", "month"), ("cumulative", "cumulative"))
+        if result.get(source) is not None
+    }
 
 
-async def getRaw(hass, allData, apiKey, devicesn):
-    await waitforAPI()  # check for api delay
+async def getRaw(hass, allData, apiKey, devicesn, *, v1_api=True, restrict=False):
+    payload = {"sns": [devicesn]} if v1_api else {"sn": devicesn}
+    if restrict:
+        payload["variables"] = (
+            "ambientTemperation batChargePower batCurrent batCurrent_1 batCurrent_2 batDischargePower "
+            "batTemperature batTemperature_1 batTemperature_2 batVolt batVolt_1 batVolt_2 boostTemperation "
+            "chargeTemperature dspTemperature epsCurrentR epsCurrentS epsCurrentT epsPower epsPowerR epsPowerS "
+            "epsPowerT epsVoltR epsVoltS epsVoltT feedinPower generationPower gridConsumptionPower input "
+            "invBatCurrent invBatPower invBatVolt invTemperation loadsPower loadsPowerR loadsPowerS loadsPowerT "
+            "meterPower meterPower2 meterPowerR meterPowerS meterPowerT PowerFactor pv1Current pv1Power pv1Volt "
+            "pv2Current pv2Power pv2Volt pv3Current pv3Power pv3Volt pv4Current pv4Power pv4Volt pvPower RCurrent "
+            "ReactivePower RFreq RPower RVolt SCurrent SFreq SoC SPower SVolt TCurrent TFreq TPower TVolt "
+            "SoC_1 SoC_2 ResidualEnergy energyThroughput runningState currentFaultCount"
+        ).split()
+    path = _ENDPOINT_OA_DEVICE_VARIABLES_V1 if v1_api else _ENDPOINT_OA_DEVICE_VARIABLES
+    result, elapsed_ms = await async_request(hass, METHOD_POST, path, apiKey, payload=payload)
+    if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+        raise UpdateFailed("FoxESS returned invalid real-time data")
+    sample = result[0]
+    if sample.get("deviceSN", sample.get("sn", devicesn)) != devicesn:
+        raise DeviceNotFound("FoxESS returned readings for a different inverter")
+    if not isinstance(sample.get("time"), str) or not isinstance(sample.get("datas"), list):
+        raise UpdateFailed("FoxESS returned incomplete real-time data")
+    try:
+        sample_time = dt_util.as_utc(datetime.strptime(sample["time"], "%Y-%m-%d %H:%M:%S GMT%z"))
+    except ValueError as err:
+        raise UpdateFailed("FoxESS returned an invalid sample timestamp") from err
 
-    # "deviceSN" used for OpenAPI and it only fetches the real time data
+    raw = {}
+    for item in sample["datas"]:
+        if not isinstance(item, dict) or not isinstance(item.get("variable"), str):
+            raise UpdateFailed("FoxESS returned an invalid real-time measurement")
+        variable = item["variable"]
+        value = item.get("value")
+        if value is None:
+            continue
+        if variable == "runningState":
+            raw[variable] = str(value)
+            continue
+        value = _number(value)
+        variable = {"batTemperature_1": "batTemperature", "invBatPower_1": "invBatPower"}.get(variable, variable)
+        if variable == "ResidualEnergy":
+            scale = {"kWh": 1, "1.0kWh": 1, "0.1kWh": 0.1}.get(item.get("unit"))
+            if scale is None:
+                _LOGGER.warning("FoxESS returned an unsupported ResidualEnergy unit")
+                continue
+            value = round(value * scale, 3)
+        raw[variable] = value
 
-    # build the devicesn string
-    if V1_Api:
-        dsn = '{"sns":["' + devicesn + '"] }'
-    else:
-        dsn = '{"sn":"' + devicesn + '" }'
-
-    if RestrictGetVar:
-        _LOGGER.debug("Getting Device Variable in restricted mode")
-        # build the devicesn string
-        if V1_Api:
-            dsn = '{"sns":["' + devicesn + '"] '
-        else:
-            dsn = '{"sn":"' + devicesn + '"'
-
-        rawData = (
-            dsn
-            + ',"variables":["ambientTemperation", "batChargePower", "batCurrent", "batCurrent_1", "batCurrent_2", "batDischargePower", "batTemperature", "batTemperature_1", "batTemperature_2", "batVolt", "batVolt_1", "batVolt_2", "boostTemperation", "chargeTemperature", "dspTemperature", "epsCurrentR", "epsCurrentS", "epsCurrentT", "epsPower", "epsPowerR", "epsPowerS", "epsPowerT", "epsVoltR", "epsVoltS", "epsVoltT", "feedinPower", "generationPower", "gridConsumptionPower", "input", "invBatCurrent", "invBatPower", "invBatVolt", "invTemperation", "loadsPower", "loadsPowerR", "loadsPowerS", "loadsPowerT", "meterPower", "meterPower2", "meterPowerR", "meterPowerS", "meterPowerT", "PowerFactor", "pv1Current", "pv1Power", "pv1Volt", "pv2Current", "pv2Power", "pv2Volt", "pv3Current", "pv3Power", "pv3Volt", "pv4Current", "pv4Power", "pv4Volt", "pvPower", "RCurrent", "ReactivePower", "RFreq", "RPower", "RVolt", "SCurrent", "SFreq", "SoC", "SPower", "SVolt", "TCurrent", "TFreq", "TPower", "TVolt", "SoC_1", "Soc_2", "ResidualEnergy", "energyThroughput", "runningState", "currentFaultCount"] }'
-        )
-    else:
-        rawData = dsn  # '{"sn":"' + dsn + '" }'
-
-    _LOGGER.debug("getRaw OA request: %s", rawData)
-
-    timestamp = round(time.time() * 1000)
-
-    if V1_Api:
-        path = _ENDPOINT_OA_DEVICE_VARIABLES_V1
-        _LOGGER.debug("Using V1 API")
-    else:
-        path = _ENDPOINT_OA_DEVICE_VARIABLES
-
-    headerData = GetAuth().get_signature(token=apiKey, path=path)
-
-    path = _ENDPOINT_OA_DOMAIN + path
-    _LOGGER.debug("Path: %s", path)
-
-    varText, lastException = await _async_api_fetch(hass, METHOD_POST, path, headerData, rawData)
-    if lastException is not None:
-        lastex = str(lastException)
-        _LOGGER.debug("Getvar exception: %s", lastex)
-        dns_tokens = ("dns", "resolve", "resolution", "name or service not known", "nodename nor servname")
-        if isinstance(lastException, _DNS_CONNECTOR_ERROR) or any(token in lastex.lower() for token in dns_tokens):
-            _LOGGER.debug("Getvar DNS exception: %s", lastex)
-            return DNS_ERROR
-            # [Timeout while contacting DNS servers]
-
-    if varText is None or varText == "":
-        _LOGGER.debug("Unable to get OA Variables from FoxESS Cloud")
-        return True
-    else:
-        # Openapi responded correctly
-        response = json.loads(varText)
-        if response["errno"] == 0 and (response["msg"] == "success" or response["msg"] == "Operation successful"):
-            ResponseTime = round(time.time() * 1000) - timestamp
-            if ResponseTime > 0:
-                allData["raw"]["ResponseTime"] = ResponseTime
-            else:
-                allData["raw"]["ResponseTime"] = 0
-
-            test = json.loads(varText)["result"]
-
-            timercv = test[0].get("time")
-            try:
-                # format is "2025-02-21 16:38:29 GMT+0000" strptime is useless at international dates, so work out the offset
-                # tsrcv = datetime.strptime(testt, "%Y-%m-%d %H:%M:%S %Z%z") fails on some countries
-                _LOGGER.debug("OA Variables time: %s ", timercv)
-                tzoffsetsign = timercv[23:24]
-                tzoffsethr = int(timercv[24:26])
-                tzoffsetmin = int(timercv[26:28])
-                tzfull = str(timercv[23:28])
-                _LOGGER.debug(
-                    "OA Variables tzoffsign: %s, hr: %s, min: %s, full: %s",
-                    tzoffsetsign,
-                    tzoffsethr,
-                    tzoffsetmin,
-                    tzfull,
-                )
-                if tzoffsetsign in ["+"]:
-                    tzoffset = (tzoffsethr * 3600 + tzoffsetmin * 60) * 1
-                else:
-                    tzoffset = (tzoffsethr * 3600 + tzoffsetmin * 60) * -1
-                tsrcv = (parser.parse(timercv, ignoretz=True)).timestamp()
-                zulu = datetime.now().astimezone().strftime("%z")
-                if zulu != tzfull:
-                    if xtzone:
-                        _LOGGER.debug(
-                            "OA Variables tsrcv applying offset: %s, offset: %s, zulu: %s",
-                            tsrcv,
-                            tzoffset,
-                            zulu,
-                        )
-                        tsrcv = tsrcv - tzoffset
-                else:
-                    _LOGGER.debug(
-                        "OA Variables tsrcv is local: %s, zulu: %s, offset: %s ",
-                        tsrcv,
-                        zulu,
-                        tzoffset,
-                    )
-            except Exception:
-                tsrcv = 0
-            age = 0
-            if tsrcv != 0:
-                testd = datetime.now()
-                tsnow = round(time.time())
-                age = round(tsnow - tsrcv)
-                _LOGGER.debug(
-                    "OA Variables time: %s vs %s timestamps r:%s now:%s, age: %s",
-                    timercv,
-                    testd,
-                    tsrcv,
-                    tsnow,
-                    age,
-                )
-                if age > 361:
-                    _LOGGER.debug(
-                        "OA Variables invalid age: %s vs %s timestamps r:%s now:%s, age: %s",
-                        timercv,
-                        testd,
-                        tsrcv,
-                        tsnow,
-                        age,
-                    )
-
-            result = test[0].get("datas")
-            _LOGGER.debug("OA Variables Good Response: %s", result)
-            # allData['raw'] = {}
-            for item in result:  # json.loads(result): # varText['result']:
-                variableName = item["variable"]
-                # If value exists
-                if item.get("value") is not None:
-                    variableValue = item["value"]
-                else:
-                    variableValue = 0
-                    _LOGGER.debug("Variable %s no value, set to zero", variableName)
-                # fix for various battery and scale items
-                if variableName == "SoC_1":
-                    variableName = (
-                        "SoC_1"  # do nothing for the moment, future release might align this correctly to use SoC
-                    )
-                elif variableName == "batTemperature_1":
-                    variableName = "batTemperature"  # use entity for single battery systems
-                elif variableName == "invBatPower_1":
-                    variableName = "invBatPower"  # use entity for single battery systems
-                elif variableName == "ResidualEnergy":
-                    if item.get("unit") is not None:
-                        scale = item["unit"]
-                        if scale in ["1.0kWh", "kWh", None]:
-                            variableValue = round((variableValue * 100), 2)
-                            _LOGGER.debug("OA Variables ResidualEnergy Scale: *100 %s", scale)
-                        elif scale == "0.1kWh":
-                            variableValue = round((variableValue * 10), 2)
-                            _LOGGER.debug("OA Variables ResidualEnergy Scale: *10 %s", scale)
-                        else:
-                            _LOGGER.debug("OA Variables ResidualEnergy Scale: %s", scale)
-
-                allData["raw"][variableName] = variableValue
-                _LOGGER.debug(
-                    "Var: %s, SN: %s set to %s",
-                    variableName,
-                    devicesn,
-                    allData["raw"][variableName],
-                )
-
-                if variableName == "runningState" and ("hasBattery" in allData["addressbook"]):
-                    hasBat = allData["addressbook"]["hasBattery"]
-                    if not hasBat:
-                        # solar only inverter
-                        _LOGGER.debug(
-                            "TestState: %s, hasBat: %s online: %s",
-                            variableValue,
-                            hasBat,
-                            allData["online"],
-                        )
-                        if variableValue is not None:
-                            if variableValue == "161" or variableValue == "162":
-                                # waiting and solar only so set off-line flag
-                                if age < 361:
-                                    _LOGGER.debug(
-                                        "Waiting but data less than 5 minutes old - allow sample, RunningState: %s, hasBat: %s online: %s",
-                                        variableValue,
-                                        hasBat,
-                                        allData["online"],
-                                    )
-                                else:
-                                    allData["online"] = False
-                                    _LOGGER.debug(
-                                        "Waiting so set off-line state, TestState: %s, hasBat: %s online: %s",
-                                        variableValue,
-                                        hasBat,
-                                        allData["online"],
-                                    )
-                            elif variableValue == "163" and not allData["online"]:
-                                # on-grid but showing off-line wait for it to be set on-line by OADeviceDetail
-                                # allData["online"] = False
-                                _LOGGER.debug(
-                                    "Inverter on-grid but off-line wait for OADevice to confirm, TestState: %s, hasBat: %s",
-                                    variableValue,
-                                    hasBat,
-                                )
-
-            return False
-        else:
-            _LOGGER.debug("OA Device Variables Bad Response: %s", response)
-            return True
+    age = dt_util.utcnow() - sample_time
+    if age > RAW_MAX_AGE:
+        if allData["hasBattery"] is False and raw.get("runningState") in ("161", "162"):
+            allData["online"] = False
+            allData["raw"] = {"runningState": raw["runningState"]}
+            return
+        raise UpdateFailed("FoxESS real-time data is stale")
+    if age < timedelta(minutes=-1):
+        raise UpdateFailed("FoxESS sample timestamp is in the future")
+    if not any(key != "runningState" for key in raw):
+        raise UpdateFailed("FoxESS returned no usable real-time measurements")
+    raw["ResponseTime"] = elapsed_ms
+    allData["raw"] = raw
+    allData["last_cloud_sync"] = sample_time
+    allData["online"] = True
 
 
 class FoxESSPowerString(CoordinatorEntity, SensorEntity):
@@ -1893,37 +1392,28 @@ class FoxESSInverter(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        if self.coordinator.data["online"] or (
-            not self.coordinator.data["online"] and int(self.coordinator.data["addressbook"]["status"]) in [1, 2, 3]
-        ):
-            if "status" not in self.coordinator.data["addressbook"]:
-                _LOGGER.debug("addressbook status None")
-            else:
-                if int(self.coordinator.data["addressbook"]["status"]) == 1:
-                    return "on-line"
-                else:
-                    if int(self.coordinator.data["addressbook"]["status"]) == 2:
-                        return "in-alarm"
-                    else:
-                        return "off-line"
-        return None
+        status = self.coordinator.data.get("addressbook", {}).get("status")
+        return {"1": "on-line", "2": "in-alarm", "3": "off-line"}.get(str(status))
 
     @property
     def extra_state_attributes(self):
-        if "status" not in self.coordinator.data["addressbook"]:
-            _LOGGER.debug("addressbook status attributes None")
-            return None
-        return {
-            ATTR_DEVICE_SN: self.coordinator.data["addressbook"][ATTR_DEVICE_SN],
-            ATTR_PLANTNAME: self.coordinator.data["addressbook"][ATTR_PLANTNAME],
-            ATTR_MODULESN: self.coordinator.data["addressbook"][ATTR_MODULESN],
-            ATTR_DEVICE_TYPE: self.coordinator.data["addressbook"][ATTR_DEVICE_TYPE],
-            ATTR_MASTER: self.coordinator.data["addressbook"][ATTR_MASTER],
-            ATTR_MANAGER: self.coordinator.data["addressbook"][ATTR_MANAGER],
-            ATTR_SLAVE: self.coordinator.data["addressbook"][ATTR_SLAVE],
-            ATTR_BATTERYLIST: self.coordinator.data["addressbook"][ATTR_BATTERYLIST],
-            ATTR_LASTCLOUDSYNC: dt_util.now(),
+        details = self.coordinator.data.get("addressbook", {})
+        attributes = {
+            key: details[key]
+            for key in (
+                ATTR_DEVICE_SN,
+                ATTR_PLANTNAME,
+                ATTR_MODULESN,
+                ATTR_DEVICE_TYPE,
+                ATTR_MASTER,
+                ATTR_MANAGER,
+                ATTR_SLAVE,
+                ATTR_BATTERYLIST,
+            )
+            if key in details
         }
+        attributes[ATTR_LASTCLOUDSYNC] = self.coordinator.data.get("last_cloud_sync")
+        return attributes
 
 
 class FoxESSRunningState(CoordinatorEntity, SensorEntity):
@@ -1999,6 +1489,25 @@ class FoxESSStatus(CoordinatorEntity, SensorEntity):
     def native_value(self) -> str | None:
         return self.coordinator.data.get("operational_state")
 
+    @property
+    def available(self) -> bool:
+        return self.coordinator.data is not None
+
+
+def _solar_total(data, section, keys):
+    if not data["online"]:
+        return None
+    values = data[section]
+    total = 0
+    for key, sign, battery in keys:
+        value = values.get(key)
+        if value is None:
+            if battery and data.get("hasBattery") is False:
+                continue
+            return None
+        total += sign * value
+    return round(max(0, total), 3)
+
 
 class FoxESSEnergySolar(CoordinatorEntity, SensorEntity):
     _attr_state_class: SensorStateClass = SensorStateClass.TOTAL_INCREASING
@@ -2020,37 +1529,17 @@ class FoxESSEnergySolar(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        if not self.coordinator.data["online"]:
-            return None
-        if "loads" not in self.coordinator.data["report"]:
-            loads = 0
-        else:
-            loads = float(self.coordinator.data["report"]["loads"])
-
-        if "chargeEnergyToTal" not in self.coordinator.data["report"]:
-            charge = 0
-        else:
-            charge = float(self.coordinator.data["report"]["chargeEnergyToTal"])
-
-        if "feedin" not in self.coordinator.data["report"]:
-            feedIn = 0
-        else:
-            feedIn = float(self.coordinator.data["report"]["feedin"])
-
-        if "gridConsumption" not in self.coordinator.data["report"]:
-            gridConsumption = 0
-        else:
-            gridConsumption = float(self.coordinator.data["report"]["gridConsumption"])
-
-        if "dischargeEnergyToTal" not in self.coordinator.data["report"]:
-            discharge = 0
-        else:
-            discharge = float(self.coordinator.data["report"]["dischargeEnergyToTal"])
-
-        energysolar = round((loads + charge + feedIn - gridConsumption - discharge), 3)
-        if energysolar < 0:
-            energysolar = 0
-        return round(energysolar, 3)
+        return _solar_total(
+            self.coordinator.data,
+            "report",
+            (
+                ("loads", 1, False),
+                ("chargeEnergyToTal", 1, True),
+                ("feedin", 1, False),
+                ("gridConsumption", -1, False),
+                ("dischargeEnergyToTal", -1, True),
+            ),
+        )
 
 
 class FoxESSSolarPower(CoordinatorEntity, SensorEntity):
@@ -2073,44 +1562,17 @@ class FoxESSSolarPower(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        if not self.coordinator.data["online"]:
-            return None
-        if "loadsPower" not in self.coordinator.data["raw"]:
-            loads = 0
-        else:
-            loads = float(self.coordinator.data["raw"]["loadsPower"])
-
-        if "batChargePower" not in self.coordinator.data["raw"]:
-            charge = 0
-        else:
-            if self.coordinator.data["raw"]["batChargePower"] is None:
-                charge = 0
-            else:
-                charge = float(self.coordinator.data["raw"]["batChargePower"])
-
-        if "feedinPower" not in self.coordinator.data["raw"]:
-            feedIn = 0
-        else:
-            feedIn = float(self.coordinator.data["raw"]["feedinPower"])
-
-        if "gridConsumptionPower" not in self.coordinator.data["raw"]:
-            gridConsumption = 0
-        else:
-            gridConsumption = float(self.coordinator.data["raw"]["gridConsumptionPower"])
-
-        if "batDischargePower" not in self.coordinator.data["raw"]:
-            discharge = 0
-        else:
-            if self.coordinator.data["raw"]["batDischargePower"] is None:
-                discharge = 0
-            else:
-                discharge = float(self.coordinator.data["raw"]["batDischargePower"])
-
-        # check if what was returned (that some time was negative) is <0, so fix it
-        total = loads + charge + feedIn - gridConsumption - discharge
-        if total < 0:
-            total = 0
-        return round(total, 3)
+        return _solar_total(
+            self.coordinator.data,
+            "raw",
+            (
+                ("loadsPower", 1, False),
+                ("batChargePower", 1, True),
+                ("feedinPower", 1, False),
+                ("gridConsumptionPower", -1, False),
+                ("batDischargePower", -1, True),
+            ),
+        )
 
 
 class FoxESSBatSoC(CoordinatorEntity, SensorEntity):
@@ -2262,18 +1724,12 @@ class FoxESSResidualEnergy(CoordinatorEntity, SensorEntity):
             if "ResidualEnergy" not in self.coordinator.data["raw"]:
                 _LOGGER.debug("ResidualEnergy None")
             else:
-                re = self.coordinator.data["raw"]["ResidualEnergy"]
-                if re > 0:
-                    if re > 50:  # if openAPI scale is invalid (bug)
-                        re = re / 100
-                else:
-                    re = 0
-                return re
+                return self.coordinator.data["raw"]["ResidualEnergy"]
         return None
 
 
 class FoxESSResponseTime(CoordinatorEntity, SensorEntity):
-    _attr_native_unit_of_measurement = "mS"
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
 
     def __init__(self, coordinator, name, deviceID):
         super().__init__(coordinator=coordinator)
