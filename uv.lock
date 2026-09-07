@@ -804,7 +804,7 @@ wheels = [
 
 [[package]]
 name = "foxess-ha"
-version = "1.2.3"
+version = "2.0.0rc2"
 source = { virtual = "." }
 
 [package.dev-dependencies]
