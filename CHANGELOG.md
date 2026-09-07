@@ -1,6 +1,38 @@
 # CHANGELOG
 
 
+## v2.0.0 (2026-09-07)
+
+### Bug Fixes
+
+- Accept FoxESS regional timestamps and mixed real-time values
+  ([`73ed5f2`](https://github.com/teh-hippo/foxess-ha/commit/73ed5f2f4bbdd9b54481403e22f852f9d719201f))
+
+- Modernise Home Assistant compatibility and inverter data handling
+  ([`b1c9c46`](https://github.com/teh-hippo/foxess-ha/commit/b1c9c46799af7e63280f5ac9a36d9c4bf104de1d))
+
+- Retain accepted samples until the next scheduled poll
+  ([`b08dae7`](https://github.com/teh-hippo/foxess-ha/commit/b08dae74fa8d86e23d2cfa3b99842b26e4fe7f46))
+
+### Build System
+
+- **deps**: Pin hub reusable workflows to v2
+  ([`e35e37c`](https://github.com/teh-hippo/foxess-ha/commit/e35e37cf534940bfe6f1cb0b3d6de66dc5eefccf))
+
+### Chores
+
+- **deps**: Update python-semantic-release/python-semantic-release digest to 37a30a7
+  ([`7ab44cb`](https://github.com/teh-hippo/foxess-ha/commit/7ab44cbc0172aa56c12263cc48581019e17b2cf9))
+
+- **renovate**: Extend base preset directly (retire weekly slot)
+  ([`3000ec0`](https://github.com/teh-hippo/foxess-ha/commit/3000ec0903bc24ba0fc1187e504fb6f5a2e163e9))
+
+### Continuous Integration
+
+- Remove CodeQL advanced workflow in favour of default setup
+  ([`8a97e5c`](https://github.com/teh-hippo/foxess-ha/commit/8a97e5c1c98fa5ac0b8509b922bdb6849304134c))
+
+
 ## v1.2.3 (2026-07-06)
 
 ### Bug Fixes
