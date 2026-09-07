@@ -227,6 +227,33 @@ async def test_report_freshness_uses_its_own_cadence(setup_inverter, freezer):
     assert coordinator.data["reportDailyGeneration"]["cumulative"] == 100
 
 
+async def test_accepted_sample_stays_available_between_scheduled_polls(
+    setup_inverter,
+    cloud_request,
+    freezer,
+):
+    original = cloud_request.side_effect
+
+    async def respond(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[2].endswith("/real/query"):
+            result[0]["time"] = (dt_util.utcnow() - timedelta(minutes=3)).strftime("%Y-%m-%d %H:%M:%S GMT%z")
+        return result
+
+    cloud_request.side_effect = respond
+    coordinator, _ = await setup_inverter()
+    first_sample = coordinator.data["last_cloud_sync"]
+    for _ in range(4):
+        freezer.tick(timedelta(minutes=1))
+        await coordinator.async_refresh()
+        assert coordinator.data["online"]
+        assert coordinator.data["raw"]["pvPower"] == 1.0
+        assert coordinator.data["last_cloud_sync"] == first_sample
+    freezer.tick(timedelta(minutes=1))
+    await coordinator.async_refresh()
+    assert coordinator.data["last_cloud_sync"] > first_sample
+
+
 async def test_null_and_missing_reports_never_reset_energy(hass, cloud_request, freezer):
     freezer.move_to("2026-09-07T12:00:00+00:00")
     data = {"report": {"feedin": 4}, "reportDailyGeneration": {"cumulative": 100}}

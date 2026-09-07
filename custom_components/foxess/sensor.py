@@ -264,7 +264,9 @@ async def _async_setup_sensors(hass, config, async_add_entities, entry=None):
         if allData["operational_state"] == "asleep" and is_expected_online:
             timeslice = RETRY_NEXT_SLOT
         timeslice = (timeslice + 1) % 60
-        if allData["last_cloud_sync"] is not None and now - allData["last_cloud_sync"] > RAW_MAX_AGE:
+        # A newly fetched cloud sample can already be several minutes old.
+        last_fetch = allData["updated_at"].get("raw")
+        if last_fetch is not None and now - last_fetch > RAW_MAX_AGE:
             allData["online"] = False
             allData["raw"] = {}
         if not (_is_pv_only() and not is_expected_online):
@@ -291,6 +293,8 @@ async def _async_setup_sensors(hass, config, async_add_entities, entry=None):
                 else:
                     await getRaw(hass, allData, apiKey, devicesn, v1_api=V1_Api, restrict=RestrictGetVar)
                     confirmed_offline = not allData["online"]
+                    if allData["online"]:
+                        allData["updated_at"]["raw"] = dt_util.utcnow()
                 last_error = None
             except (UpdateFailed, ConfigEntryAuthFailed) as err:
                 confirmed_offline = False
