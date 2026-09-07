@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections import namedtuple
 from datetime import datetime, timedelta
 
@@ -699,6 +700,11 @@ async def async_prepare_entry(hass, entry):
 def _number(value):
     if value is None:
         return None
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError as err:
+            raise UpdateFailed("FoxESS returned a non-numeric measurement") from err
     if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
         raise UpdateFailed("FoxESS returned a non-numeric measurement")
     return value
@@ -790,7 +796,8 @@ async def getRaw(hass, allData, apiKey, devicesn, *, v1_api=True, restrict=False
     if not isinstance(sample.get("time"), str) or not isinstance(sample.get("datas"), list):
         raise UpdateFailed("FoxESS returned incomplete real-time data")
     try:
-        sample_time = dt_util.as_utc(datetime.strptime(sample["time"], "%Y-%m-%d %H:%M:%S GMT%z"))
+        timestamp = re.sub(r"[A-Za-z]+(?=[+-]\d{2}:?\d{2}$)", "", sample["time"])
+        sample_time = dt_util.as_utc(datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S %z"))
     except ValueError as err:
         raise UpdateFailed("FoxESS returned an invalid sample timestamp") from err
 
@@ -805,7 +812,13 @@ async def getRaw(hass, allData, apiKey, devicesn, *, v1_api=True, restrict=False
         if variable == "runningState":
             raw[variable] = str(value)
             continue
-        value = _number(value)
+        try:
+            value = _number(value)
+        except UpdateFailed:
+            if not isinstance(item["value"], str):
+                raise
+            _LOGGER.debug("Ignoring text-valued FoxESS variable %s", variable)
+            continue
         variable = {"batTemperature_1": "batTemperature", "invBatPower_1": "invBatPower"}.get(variable, variable)
         if variable == "ResidualEnergy":
             scale = {"kWh": 1, "1.0kWh": 1, "0.1kWh": 0.1}.get(item.get("unit"))

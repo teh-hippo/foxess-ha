@@ -254,6 +254,9 @@ async def test_raw_normalisation_and_missing_fields(hass, cloud_request, value, 
                 {"variable": "pvPower", "value": 0},
                 {"variable": "energyThroughput", "value": None},
                 {"variable": "ResidualEnergy", "value": value, "unit": unit},
+                {"variable": "PowerFactor", "value": "0.95"},
+                {"variable": "currentFaultCount", "value": "0"},
+                {"variable": "currentFault", "value": "[]"},
             ],
         }
     ]
@@ -263,6 +266,9 @@ async def test_raw_normalisation_and_missing_fields(hass, cloud_request, value, 
     assert data["raw"]["pvPower"] == 0
     assert "energyThroughput" not in data["raw"]
     assert "obsolete" not in data["raw"]
+    assert data["raw"]["PowerFactor"] == 0.95
+    assert data["raw"]["currentFaultCount"] == 0
+    assert "currentFault" not in data["raw"]
 
 
 @pytest.mark.parametrize("timestamp", ["malformed", "2020-01-01 00:00:00 GMT+0000"])
@@ -276,12 +282,22 @@ async def test_bad_or_stale_timestamp_does_not_update_data(hass, cloud_request, 
     assert data["raw"] == {"pvPower": 1}
 
 
-async def test_cloud_timestamp_uses_explicit_offset(hass, cloud_request, freezer):
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-09-07 12:00:00 GMT+1000",
+        "2026-09-07 12:00:00 AEST+1000",
+        "2026-09-07 13:00:00 AEDT+1100",
+        "2026-09-06 22:00:00 GMT-04:00",
+        "2026-09-07 07:30:00 IST+0530",
+    ],
+)
+async def test_cloud_timestamp_uses_explicit_offset(hass, cloud_request, freezer, timestamp):
     freezer.move_to("2026-09-07T02:00:00+00:00")
     cloud_request.side_effect = None
     cloud_request.return_value = [
         {
-            "time": "2026-09-07 12:00:00 GMT+1000",
+            "time": timestamp,
             "datas": [{"variable": "pvPower", "value": 1}],
         }
     ]

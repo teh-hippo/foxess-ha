@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.util import dt as dt_util
@@ -38,10 +39,15 @@ def cloud_request(monkeypatch, cloud_device):
             return [
                 {
                     "deviceSN": sn,
-                    "time": dt_util.utcnow().strftime("%Y-%m-%d %H:%M:%S GMT%z"),
+                    "time": dt_util.utcnow()
+                    .astimezone(ZoneInfo("Australia/Sydney"))
+                    .strftime("%Y-%m-%d %H:%M:%S %Z%z"),
                     "datas": [
                         {"variable": "pvPower", "value": 1.0, "unit": "kW"},
                         {"variable": "runningState", "value": "163"},
+                        {"variable": "PowerFactor", "value": "0.95"},
+                        {"variable": "currentFaultCount", "value": "0"},
+                        {"variable": "currentFault", "value": "[]"},
                     ],
                 }
             ]
