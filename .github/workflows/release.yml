@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -18,6 +18,12 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      released: ${{ steps.semantic_release.outputs.released }}
+      is_prerelease: ${{ steps.semantic_release.outputs.is_prerelease }}
+      version: ${{ steps.semantic_release.outputs.version }}
+      tag: ${{ steps.semantic_release.outputs.tag }}
+      sha: ${{ steps.semantic_release.outputs.commit_sha }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -32,16 +38,51 @@ jobs:
         with:
           github_token: ${{ secrets.RELEASE_TOKEN }}
 
+  package:
+    name: Package stable HACS release
+    needs: release
+    if: ${{ needs.release.outputs.released == 'true' && needs.release.outputs.is_prerelease == 'false' }}
+    permissions:
+      contents: write
+    uses: teh-hippo/common-repo-configs/.github/workflows/ha-prerelease.yml@2485d1fee6af1e1282dddc0ad7bf78e6efb92e43 # v3.3.1
+    with:
+      integration: foxess
+      target_sha: ${{ needs.release.outputs.sha }}
+      version: ${{ needs.release.outputs.version }}
+      publish: false
+
+  upload:
+    name: Upload stable HACS assets
+    needs: [release, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ needs.package.outputs.artifact_name }}
+          path: dist
+
+      - name: Attach verified integration archive
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        with:
+          tag_name: ${{ needs.release.outputs.tag }}
+          files: |
+            dist/foxess.zip
+            dist/foxess.zip.sha256
+            dist/foxess.build.json
+          fail_on_unmatched_files: true
+          overwrite_files: false
+
       - name: Create/Update latest GitHub Release
-        if: ${{ steps.semantic_release.outputs.released == 'true' && steps.semantic_release.outputs.is_prerelease == 'false' }}
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: latest
           name: latest
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ needs.release.outputs.sha }}
           generate_release_notes: false
           prerelease: false
           overwrite_files: true
           body: |
             Alias release for tooling that resolves by `latest`.
-            Current stable tag: ${{ steps.semantic_release.outputs.tag }}
+            Current stable tag: ${{ needs.release.outputs.tag }}

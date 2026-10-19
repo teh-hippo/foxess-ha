@@ -1,4 +1,7 @@
 {
   "name": "FoxESS",
-  "homeassistant": "2026.7.0"
+  "homeassistant": "2026.7.0",
+  "zip_release": true,
+  "filename": "foxess.zip",
+  "hide_default_branch": true
 }
