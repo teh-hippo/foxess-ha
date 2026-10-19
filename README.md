@@ -53,7 +53,7 @@ Normal polling does not change the entity set.  To check changed wiring or hardw
 | Battery | Static battery metadata; conflicting evidence does not authorise night offload |
 | Temperatures | Informative readings assessed individually |
 | Power quality | Informative reactive-power or Power Factor readings, not zero-padding or a binary 0/1 profile |
-| Energy counters | Non-zero counter evidence, checked against activity in the corresponding power flow |
+| Energy counters | Non-zero history or daily-report evidence; zero reports checked against the corresponding power flow over matching days |
 | Diagnostics | Inverter metadata, Status, Running State, response time and real generation totals |
 
 Battery output alone does not establish solar activity.  Power Factor uses a unitless ratio; Home Assistant can display it as a percentage.
@@ -61,6 +61,9 @@ Battery output alone does not establish solar activity.  Power Factor uses a uni
 Detection is a short-window heuristic, not proof of physical hardware.  A quiet or failed window retains unresolved capabilities
 rather than asserting that hardware is absent.  New entries without useful history retain a compatible selection and show a Repairs
 notice.  Retry detection after the inverter has reported while operating.
+
+Counter detection uses the local reporting days touched by the history window, including month and year boundaries.
+Missing report days do not establish that a counter is unsupported.
 
 Only aligned, informative readings with the same units and meaning can be deduplicated, such as confirmed single-phase generation
 power or duplicate inverter temperatures.  DC PV power is not AC generation, and unrelated PV inputs are never merged.

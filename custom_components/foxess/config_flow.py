@@ -36,7 +36,6 @@ from .const import (
     DEFAULT_WAKE_GRACE_MINUTES,
     DOMAIN,
 )
-from .coordinator import get_report
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -179,10 +178,8 @@ class FoxESSOptionsFlow(OptionsFlow):
                         evo=options.get(CONF_EVO, False),
                     )
                     selected = set(previous["entities"]) if valid_record(previous) else compatible_entities(details)
-                    data = {}
-                    await get_report(self.hass, data, entry.data[CONF_APIKEY], entry.data[CONF_DEVICESN])
                     record = await async_detect(
-                        self.hass, entry.data[CONF_APIKEY], entry.data[CONF_DEVICESN], details, selected, data["report"]
+                        self.hass, entry.data[CONF_APIKEY], entry.data[CONF_DEVICESN], details, selected
                     )
                     if record["outcome"] != "complete":
                         errors["base"] = "detection_inconclusive"

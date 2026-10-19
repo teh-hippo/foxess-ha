@@ -110,6 +110,8 @@ async def test_history_windows_and_failure_are_not_successful_empty_detection(ha
     calls = []
 
     async def respond(hass, method, path, key, *, payload):
+        if path.endswith("/report/query"):
+            return []
         calls.append(payload)
         assert payload["end"] - payload["begin"] == timedelta(hours=24).total_seconds() * 1000
         timestamp = dt_util.utc_from_timestamp(payload["begin"] / 1000 + 1).strftime("%Y-%m-%d %H:%M:%S %z")
@@ -125,9 +127,9 @@ async def test_history_windows_and_failure_are_not_successful_empty_detection(ha
 
     cloud_request.side_effect = respond
     previous = compatible_entities({"hasBattery": False})
-    record = await capabilities.async_detect(hass, "example-key", "DEV1", {"hasBattery": False}, previous, {})
+    record = await capabilities.async_detect(hass, "example-key", "DEV1", {"hasBattery": False}, previous)
     assert calls[0]["end"] == calls[1]["begin"]
     assert set(record["entities"]) == previous
     cloud_request.side_effect = [[], UpdateFailed("History unavailable")]
     with pytest.raises(UpdateFailed):
-        await capabilities.async_detect(hass, "example-key", "DEV1", {"hasBattery": False}, previous, {})
+        await capabilities.async_detect(hass, "example-key", "DEV1", {"hasBattery": False}, previous)

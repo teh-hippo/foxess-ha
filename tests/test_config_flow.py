@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,11 +13,12 @@ from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.foxess import config_flow, sensor
 from custom_components.foxess import coordinator as polling
-from custom_components.foxess.capabilities import CORE, make_record
+from custom_components.foxess.capabilities import CORE, VERSION, make_record
 
 
 @pytest.fixture
@@ -270,7 +273,7 @@ async def test_failed_redetection_does_not_change_capabilities_or_prune(hass, en
 
 async def test_policy_upgrade_preserves_previous_selection_when_history_fails(hass, entry, cloud_request, monkeypatch):
     record = make_record(CORE | {"load-power", "estimated-load"}, "complete", {})
-    record["version"] = 1
+    record["version"] = VERSION - 1
     hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
     detect = AsyncMock(side_effect=UpdateFailed("History unavailable"))
     monkeypatch.setattr(sensor, "async_detect", detect)
@@ -279,7 +282,7 @@ async def test_policy_upgrade_preserves_previous_selection_when_history_fails(ha
     try:
         await hass.async_block_till_done()
         detect.assert_awaited_once()
-        assert entry.data["capabilities"]["version"] == 2
+        assert entry.data["capabilities"]["version"] == VERSION
         assert entry.data["capabilities"]["outcome"] == "failed"
         assert entry.data["capabilities"]["entities"] == record["entities"]
     finally:
@@ -309,3 +312,72 @@ async def test_successful_redetection_persists_then_reloads_and_preserves_retain
     assert registry.async_get_entity_id("sensor", "foxess", "LEGACYstatus") == retained
     assert registry.async_get(obsolete) is None
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("when", "previous_total"),
+    [
+        ("2026-10-19T13:30:00Z", 9.5),
+        ("2026-10-19T13:30:00Z", 0),
+        ("2026-10-19T13:30:00Z", None),
+        ("2026-10-31T13:30:00Z", 9.5),
+        ("2026-12-31T13:30:00Z", 9.5),
+        ("2026-10-03T16:30:00Z", 9.5),
+    ],
+)
+async def test_redetection_matches_counter_reports_to_history_days(
+    hass, entry, cloud_request, monkeypatch, freezer, when, previous_total
+):
+    await hass.config.async_set_time_zone("Australia/Sydney")
+    freezer.move_to(when)
+    previous_day = dt_util.now().date() - timedelta(days=1)
+    active_at = dt_util.start_of_local_day(previous_day) + timedelta(hours=12)
+    original = cloud_request.side_effect
+
+    async def respond(*args, **kwargs):
+        if args[2].endswith("/history/query"):
+            return [
+                {
+                    "deviceSN": "DEV1",
+                    "datas": [
+                        {
+                            "variable": variable,
+                            "data": [{"time": active_at.strftime("%Y-%m-%d %H:%M:%S %z"), "value": value}],
+                        }
+                        for variable, value in (("RVolt", 230), ("loadsPower", 1), ("loads", 0))
+                    ],
+                }
+            ]
+        if args[2].endswith("/report/query"):
+            year, month = kwargs["payload"]["year"], kwargs["payload"]["month"]
+            values = [0] * monthrange(year, month)[1]
+            if (year, month) == (previous_day.year, previous_day.month):
+                values[previous_day.day - 1] = previous_total
+            return [{"variable": "loads", "values": values}]
+        return await original(*args, **kwargs)
+
+    cloud_request.side_effect = respond
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: -10)
+    record = make_record(CORE | {"load-power", "load"}, "complete", {})
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    registry = er.async_get(hass)
+    counter = registry.async_get_or_create("sensor", "foxess", "LEGACYload", config_entry=entry)
+    registry.async_update_entity(counter.entity_id, name="House energy")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        flow = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(flow["flow_id"], {"redetect": True, "Evo": False})
+        await hass.async_block_till_done()
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        selected = entry.data["capabilities"]["entities"]
+        if previous_total == 0:
+            assert "load" not in selected
+            assert "estimated-load" in selected
+            assert registry.async_get(counter.entity_id) is None
+        else:
+            assert "load" in selected
+            assert "estimated-load" not in selected
+            assert registry.async_get(counter.entity_id).name == "House energy"
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)

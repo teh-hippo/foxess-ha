@@ -9,9 +9,9 @@ from typing import Any
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import async_request, number, sample_timestamp
+from .api import async_energy_report, async_request, number, sample_timestamp
 
-VERSION = 2
+VERSION = 3
 CORE = {
     "Inverter",
     "status",
@@ -240,7 +240,7 @@ def make_record(entities: set[str], outcome: str, reasons: dict[str, str]) -> di
     }
 
 
-async def async_detect(hass, api_key, serial, details, previous, report) -> dict:
+async def async_detect(hass, api_key, serial, details, previous) -> dict:
     """Fetch two adjacent, at-most-24-hour windows.  A failed window invalidates detection."""
     end = dt_util.utcnow()
     series: dict[str, Series] = {}
@@ -286,4 +286,22 @@ async def async_detect(hass, api_key, serial, details, previous, report) -> dict
                     timestamp = sample_timestamp(point.get("time"))
                     if start <= timestamp <= stop:
                         target.values[timestamp.isoformat()] = value
+    day = dt_util.as_local(end - timedelta(hours=48)).date()
+    last_day = dt_util.as_local(end).date()
+    totals: dict[str, list[float | int | None]] = {counter: [] for counter, _ in COUNTERS.values()}
+    while day <= last_day:
+        month = (day.year, day.month)
+        monthly = await async_energy_report(hass, api_key, serial, *month)
+        while day <= last_day and (day.year, day.month) == month:
+            for counter, values in totals.items():
+                daily = monthly.get(counter, [])
+                values.append(number(daily[day.day - 1]) if len(daily) >= day.day else None)
+            day += timedelta(days=1)
+    report = {}
+    for counter, values in totals.items():
+        positive = next((value for value in values if value is not None and value > 0), None)
+        if positive is not None:
+            report[counter] = positive
+        elif all(value == 0 for value in values):
+            report[counter] = 0
     return select_capabilities(details, series, previous, report)

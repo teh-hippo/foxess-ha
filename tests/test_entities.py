@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.foxess.capabilities import BATTERY, CORE, make_record
 from custom_components.foxess.coordinator import _solar_elevation
@@ -196,6 +198,41 @@ async def test_cached_ticks_are_not_integral_samples(hass, energy_entry, freezer
     await hass.async_block_till_done()
     assert hass.states.get(source).last_reported == reported
     assert hass.states.get(estimate).state == "unknown"
+
+
+async def test_running_state_only_sample_expires_during_night_offload(
+    hass, inverter_entry, cloud_request, monkeypatch, freezer
+):
+    from custom_components.foxess import coordinator as polling
+
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: -10)
+    record = make_record(CORE, "complete", {})
+    hass.config_entries.async_update_entry(inverter_entry, data={**inverter_entry.data, "capabilities": record})
+    original = cloud_request.side_effect
+
+    async def respond(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[2].endswith("/real/query"):
+            result[0]["datas"] = [{"variable": "runningState", "value": "161"}]
+        return result
+
+    cloud_request.side_effect = respond
+    assert await hass.config_entries.async_setup(inverter_entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        coordinator = inverter_entry.runtime_data[0].coordinator
+        entity_id = er.async_get(hass).async_get_entity_id("sensor", "foxess", "LEGACYrunning-state")
+        assert hass.states.get(entity_id).state == "161: waiting"
+        assert not coordinator.data["online"]
+        cloud_request.reset_mock()
+        freezer.tick(polling.RAW_MAX_AGE + timedelta(seconds=1))
+        async_fire_time_changed(hass, dt_util.utcnow())
+        await hass.async_block_till_done()
+        assert not coordinator.data["raw"]
+        assert hass.states.get(entity_id).state == "unknown"
+        cloud_request.assert_not_awaited()
+    finally:
+        await hass.config_entries.async_unload(inverter_entry.entry_id)
 
 
 async def test_restored_estimate_is_unavailable_when_its_source_starts_unavailable(
