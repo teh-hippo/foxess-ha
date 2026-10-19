@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import aiohttp
@@ -13,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, ENDPOINT_OA_DEVICE_DETAIL, ENDPOINT_OA_DOMAIN
 
@@ -29,6 +34,54 @@ class _RequestGate:
 
 class DeviceNotFound(UpdateFailed):
     """The requested inverter does not belong to this account."""
+
+
+class DeviceOffline(UpdateFailed):
+    """The cloud is reachable but the inverter is offline."""
+
+
+class RateLimited(UpdateFailed):
+    """The cloud has explicitly requested a polling backoff."""
+
+    def __init__(self, retry_after: float = 900) -> None:
+        super().__init__("FoxESS request limit reached", retry_after=retry_after)
+
+
+def _retry_after(value: str | None) -> float:
+    if value:
+        try:
+            seconds = float(value)
+            if math.isfinite(seconds):
+                return max(60, seconds)
+        except ValueError:
+            try:
+                return max(60, (parsedate_to_datetime(value) - dt_util.utcnow()).total_seconds())
+            except ValueError, TypeError, OverflowError:
+                pass
+    return 900
+
+
+def number(value: Any) -> float | int | None:
+    """Parse numeric telemetry without treating booleans or non-finite values as readings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError as err:
+            raise UpdateFailed("FoxESS returned a non-numeric measurement") from err
+    if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+        raise UpdateFailed("FoxESS returned a non-numeric measurement")
+    return value
+
+
+def sample_timestamp(value: str) -> datetime:
+    """Use the explicit offset, including FoxESS's regional timezone labels."""
+    try:
+        timestamp = re.sub(r"[A-Za-z]+(?=[+-]\d{2}:?\d{2}$)", "", value)
+        return dt_util.as_utc(datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S %z"))
+    except (ValueError, TypeError) as err:
+        raise UpdateFailed("FoxESS returned an invalid sample timestamp") from err
 
 
 def _build_foxess_headers(api_key: str, path: str) -> dict[str, str]:
@@ -79,7 +132,7 @@ async def async_request(
             if response.status in (401, 403):
                 raise ConfigEntryAuthFailed("FoxESS rejected the API key")
             if response.status == 429:
-                raise UpdateFailed("FoxESS request limit reached")
+                raise RateLimited(_retry_after(response.headers.get("Retry-After")))
             if response.status != 200:
                 raise UpdateFailed(f"FoxESS returned HTTP {response.status}")
             try:
@@ -97,8 +150,10 @@ async def async_request(
         raise ConfigEntryAuthFailed("FoxESS rejected the API key")
     if errno in (41930, 40261):
         raise DeviceNotFound("FoxESS could not find the requested inverter")
+    if errno == 41935:
+        raise DeviceOffline("FoxESS reports the inverter offline")
     if errno == 40400:
-        raise UpdateFailed("FoxESS request limit reached")
+        raise RateLimited()
     if errno != 0:
         raise UpdateFailed(f"FoxESS returned API error {errno}")
     result = data.get("result")
@@ -119,12 +174,11 @@ def validate_device(result: Any, device_sn: str) -> dict[str, Any]:
 
 
 async def async_device_details(
-    hass: HomeAssistant, api_key: str, device_sn: str, *, evo: bool = False, v1_api: bool = True
+    hass: HomeAssistant, api_key: str, device_sn: str, *, evo: bool = False
 ) -> dict[str, Any]:
     """Find the same device during setup, polling and reauthentication."""
     if not evo:
-        path = ENDPOINT_OA_DEVICE_DETAIL if v1_api else "/op/v0/device/detail"
-        result, _ = await async_request(hass, "GET", path, api_key, params={"sn": device_sn})
+        result, _ = await async_request(hass, "GET", ENDPOINT_OA_DEVICE_DETAIL, api_key, params={"sn": device_sn})
         return validate_device(result, device_sn)
     page = 1
     while True:

@@ -9,11 +9,10 @@ CONF_APIKEY = "apiKey"
 CONF_DEVICESN = "deviceSN"
 CONF_DEVICEID = "deviceID"
 CONF_EXTPV = "extendPV"
-CONF_XTZONE = "xtZone"
-CONF_GET_VARIABLES = "Restrict"
-CONF_V1_API = "Use_V1_Api"
 CONF_EVO = "Evo"
 CONF_HAS_BATTERY = "hasBattery"
+CONF_CAPABILITIES = "capabilities"
+CONF_REDETECT = "redetect"
 
 DEFAULT_NAME = "FoxESS"
 

@@ -12,7 +12,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.foxess import sensor
+from custom_components.foxess import config_flow, sensor
+from custom_components.foxess import coordinator as polling
+from custom_components.foxess.capabilities import CORE, make_record
 
 
 @pytest.fixture
@@ -96,7 +98,7 @@ async def test_reauth_preserves_config_entry_and_legacy_ids(hass, entry, cloud_r
 
 
 async def test_initial_entry_failure_is_retryable(hass, entry, cloud_request, monkeypatch):
-    monkeypatch.setattr(sensor, "_solar_elevation", lambda hass, when: 10)
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 10)
     cloud_request.side_effect = UpdateFailed("Temporary outage")
     assert not await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -105,7 +107,7 @@ async def test_initial_entry_failure_is_retryable(hass, entry, cloud_request, mo
 
 
 async def test_reload_and_unload_stop_old_coordinator(hass, entry, cloud_request, monkeypatch):
-    monkeypatch.setattr(sensor, "_solar_elevation", lambda hass, when: 10)
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 10)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     first = entry.runtime_data[0].coordinator
@@ -115,7 +117,7 @@ async def test_reload_and_unload_stop_old_coordinator(hass, entry, cloud_request
     }
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"extendPV": False, "Evo": False, "wake_elevation": 5, "wake_grace_minutes": 0}
+        result["flow_id"], {"redetect": False, "Evo": False, "wake_elevation": 5, "wake_grace_minutes": 0}
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -140,3 +142,78 @@ async def test_wake_bounds_match_yaml_and_options(hass, entry, key, value):
         result["data_schema"]({key: value})
     with pytest.raises(InvalidData):
         await hass.config_entries.options.async_configure(result["flow_id"], {key: value})
+
+
+async def test_yaml_import_adopts_renamed_disabled_entity_without_changing_identity(hass, cloud_request, monkeypatch):
+    registry = er.async_get(hass)
+    retained = registry.async_get_or_create("sensor", "foxess", "LEGACYstatus")
+    retained = registry.async_update_entity(
+        retained.entity_id, new_entity_id="sensor.roof_status", disabled_by=er.RegistryEntryDisabler.USER
+    )
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    await sensor.async_setup_platform(
+        hass, {"apiKey": "example-key", "deviceSN": "DEV1", "deviceID": "LEGACY", "name": "Roof"}, lambda _: None
+    )
+    await hass.async_block_till_done()
+    imported = hass.config_entries.async_entries("foxess")[0]
+    assert imported.data["deviceID"] == "LEGACY"
+    assert imported.unique_id == "DEV1"
+    assert registry.async_get("sensor.roof_status").config_entry_id == imported.entry_id
+    assert registry.async_get("sensor.roof_status").disabled_by is er.RegistryEntryDisabler.USER
+    await hass.config_entries.async_unload(imported.entry_id)
+
+
+async def test_completed_detection_prunes_only_known_owned_superseded_entities(hass, entry, cloud_request, monkeypatch):
+    registry = er.async_get(hass)
+    obsolete = registry.async_get_or_create("sensor", "foxess", "LEGACYpv3-power", config_entry=entry)
+    retained = registry.async_get_or_create("sensor", "foxess", "LEGACYstatus", config_entry=entry)
+    retained = registry.async_update_entity(retained.entity_id, new_entity_id="sensor.roof_status", name="My inverter")
+    foreign = registry.async_get_or_create("sensor", "foxess", "OTHERpv3-power", config_entry=entry)
+    helper = registry.async_get_or_create("sensor", "integration", "LEGACYsolar")
+    record = make_record(CORE, "complete", {})
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert registry.async_get(obsolete.entity_id) is None
+    assert registry.async_get("sensor.roof_status").name == "My inverter"
+    assert registry.async_get(foreign.entity_id) is foreign
+    assert registry.async_get(helper.entity_id) is helper
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_failed_redetection_does_not_change_capabilities_or_prune(hass, entry, cloud_request):
+    record = make_record(CORE | {"pv3-power"}, "complete", {})
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    entity = er.async_get(hass).async_get_or_create("sensor", "foxess", "LEGACYpv3-power", config_entry=entry)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(flow["flow_id"], {"redetect": True, "Evo": False})
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]["base"] == "detection_inconclusive"
+    assert entry.data["capabilities"] == record
+    assert er.async_get(hass).async_get(entity.entity_id) is entity
+
+
+async def test_successful_redetection_persists_then_reloads_and_preserves_retained_ids(
+    hass, entry, cloud_request, monkeypatch
+):
+    record = make_record(CORE | {"pv3-power"}, "complete", {})
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    previous = entry.runtime_data[0].coordinator
+    registry = er.async_get(hass)
+    retained = registry.async_get_entity_id("sensor", "foxess", "LEGACYstatus")
+    obsolete = registry.async_get_entity_id("sensor", "foxess", "LEGACYpv3-power")
+    selection = make_record(CORE, "complete", {})
+    monkeypatch.setattr(config_flow, "async_detect", AsyncMock(return_value=selection))
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(flow["flow_id"], {"redetect": True, "Evo": False})
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["capabilities"] == selection
+    assert previous._shutdown_requested
+    assert registry.async_get_entity_id("sensor", "foxess", "LEGACYstatus") == retained
+    assert registry.async_get(obsolete) is None
+    await hass.config_entries.async_unload(entry.entry_id)
