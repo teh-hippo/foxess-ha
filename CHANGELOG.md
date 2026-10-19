@@ -1,6 +1,38 @@
 # CHANGELOG
 
 
+## v3.0.0 (2026-10-19)
+
+### Bug Fixes
+
+- Align counter detection periods and expire running state
+  ([`3253015`](https://github.com/teh-hippo/foxess-ha/commit/3253015d790d70b874d167cbc52899f243c25293))
+
+- Harden capability migration and battery telemetry
+  ([`f265bbe`](https://github.com/teh-hippo/foxess-ha/commit/f265bbea49b812572c0010e050223cd27ff0a47b))
+
+- Make release packages installable through HACS
+  ([`bb2fffb`](https://github.com/teh-hippo/foxess-ha/commit/bb2fffb32e5139bb4bf40c90fe970f7870ffad1c))
+
+- **ci**: Publish complete verified HACS releases
+  ([`8d0a08d`](https://github.com/teh-hippo/foxess-ha/commit/8d0a08de34b24e16a439e0d8799c2f9a4e78d413))
+
+### Chores
+
+- **ci**: Build prereleases through the shared HA workflow
+  ([`5440cee`](https://github.com/teh-hippo/foxess-ha/commit/5440cee52d686adeaa60696433115acd6fb3631f))
+
+### Features
+
+- Detect supported entities and preserve honest data gaps
+  ([`7fad1a9`](https://github.com/teh-hippo/foxess-ha/commit/7fad1a99c30ebf1faee735c466ccf9315dad4849))
+
+### Testing
+
+- Cover YAML commissioning and night startup end to end
+  ([`bb907a3`](https://github.com/teh-hippo/foxess-ha/commit/bb907a397d05f01c21267d5593c4fe9f6bb4a2d8))
+
+
 ## v2.0.0 (2026-09-07)
 
 ### Bug Fixes
