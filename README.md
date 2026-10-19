@@ -194,4 +194,6 @@ HACS uses the attached **foxess.zip**, records the installed release and creates
 Back up Home Assistant and review entity references first.  Restart Home Assistant separately when ready to load the new code.
 
 Stable releases also publish the same verified ZIP through their existing semantic-release workflow.
+Semantic Release creates the version commit and tag without publishing; the shared publisher uploads every verified asset before making the release public.
+Stable changelogs exclude opt-in prerelease build tags in the runner's local checkout.  Published prereleases are not changed or deleted.
 Older releases retain their own HACS configuration, so versions predating ZIP assets continue using their original download method.
