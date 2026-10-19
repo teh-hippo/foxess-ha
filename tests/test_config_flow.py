@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.foxess import config_flow, sensor
@@ -161,6 +162,40 @@ async def test_yaml_import_adopts_renamed_disabled_entity_without_changing_ident
     assert registry.async_get("sensor.roof_status").config_entry_id == imported.entry_id
     assert registry.async_get("sensor.roof_status").disabled_by is er.RegistryEntryDisabler.USER
     await hass.config_entries.async_unload(imported.entry_id)
+
+
+async def test_yaml_sensor_setup_imports_without_a_second_operational_platform(hass, cloud_request, monkeypatch):
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    registry = er.async_get(hass)
+    retained = registry.async_get_or_create("sensor", "foxess", "LEGACYstatus")
+    registry.async_update_entity(retained.entity_id, new_entity_id="sensor.roof_status")
+    assert await async_setup_component(
+        hass,
+        "sensor",
+        {
+            "sensor": [
+                {
+                    "platform": "foxess",
+                    "apiKey": "example-key",
+                    "deviceSN": "DEV1",
+                    "deviceID": "LEGACY",
+                    "name": "Roof",
+                }
+            ],
+        },
+    )
+    await hass.async_block_till_done()
+    entries = hass.config_entries.async_entries("foxess")
+    assert len(entries) == 1
+    try:
+        assert entries[0].source == "import"
+        assert entries[0].state is ConfigEntryState.LOADED
+        assert registry.async_get("sensor.roof_status").config_entry_id == entries[0].entry_id
+        assert not [
+            item for item in registry.entities.values() if item.platform == "foxess" and item.config_entry_id is None
+        ]
+    finally:
+        await hass.config_entries.async_unload(entries[0].entry_id)
 
 
 async def test_completed_detection_prunes_only_known_owned_superseded_entities(hass, entry, cloud_request, monkeypatch):
