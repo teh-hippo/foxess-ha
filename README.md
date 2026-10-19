@@ -183,6 +183,9 @@ The ZIP, SHA-256 checksum and build metadata identify the exact source commit an
 Custom suffixes remain in the release tag and metadata; the packaged manifest uses HA-compatible `3.0.0rc1`.
 Source version fields are not changed by prerelease builds.
 
-Install the attached **foxess.zip**, not GitHub's automatically generated source archive.  Verify its checksum and back up the installed integration first.
-These artifact-only prereleases are installed manually; this does not change the existing stable HACS download process.
-Restart Home Assistant separately when ready to load the new code.
+In HACS, enable prereleases for FoxESS, select the exact prerelease version and download it.
+HACS uses the attached **foxess.zip**, records the installed release and creates its normal restart-required notice.
+Back up Home Assistant and review entity references first.  Restart Home Assistant separately when ready to load the new code.
+
+Stable releases also publish the same verified ZIP through their existing semantic-release workflow.
+Older releases retain their own HACS configuration, so versions predating ZIP assets continue using their original download method.
