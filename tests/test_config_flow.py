@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
@@ -182,6 +182,45 @@ async def test_completed_detection_prunes_only_known_owned_superseded_entities(h
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_existing_ui_entry_adopts_only_its_legacy_orphans(hass, entry, cloud_request, monkeypatch):
+    registry = er.async_get(hass)
+    orphan = registry.async_get_or_create("sensor", "foxess", "LEGACYbat-soc")
+    registry.async_update_entity(orphan.entity_id, disabled_by=er.RegistryEntryDisabler.USER)
+    foreign = registry.async_get_or_create("sensor", "foxess", "OTHERbat-soc")
+    helper = registry.async_get_or_create("sensor", "integration", "LEGACYbat-soc")
+    other_entry = MockConfigEntry(
+        domain="foxess",
+        unique_id="OTHER",
+        data={"deviceID": "OTHER"},
+        disabled_by=ConfigEntryDisabler.USER,
+    )
+    other_entry.add_to_hass(hass)
+    owned_elsewhere = registry.async_get_or_create("sensor", "foxess", "LEGACYbat-soc1", config_entry=other_entry)
+    retained = registry.async_get_or_create("sensor", "foxess", "LEGACYstatus")
+    registry.async_update_entity(
+        retained.entity_id,
+        new_entity_id="sensor.my_inverter_status",
+        name="My inverter",
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    record = make_record(CORE, "complete", {})
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        assert registry.async_get(orphan.entity_id) is None
+        adopted = registry.async_get("sensor.my_inverter_status")
+        assert adopted.config_entry_id == entry.entry_id
+        assert adopted.disabled_by is er.RegistryEntryDisabler.USER
+        assert adopted.name == "My inverter"
+        assert registry.async_get(foreign.entity_id) is foreign
+        assert registry.async_get(helper.entity_id) is helper
+        assert registry.async_get(owned_elsewhere.entity_id).config_entry_id == other_entry.entry_id
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_failed_redetection_does_not_change_capabilities_or_prune(hass, entry, cloud_request):
     record = make_record(CORE | {"pv3-power"}, "complete", {})
     hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
@@ -192,6 +231,24 @@ async def test_failed_redetection_does_not_change_capabilities_or_prune(hass, en
     assert result["errors"]["base"] == "detection_inconclusive"
     assert entry.data["capabilities"] == record
     assert er.async_get(hass).async_get(entity.entity_id) is entity
+
+
+async def test_policy_upgrade_preserves_previous_selection_when_history_fails(hass, entry, cloud_request, monkeypatch):
+    record = make_record(CORE | {"load-power", "estimated-load"}, "complete", {})
+    record["version"] = 1
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "capabilities": record})
+    detect = AsyncMock(side_effect=UpdateFailed("History unavailable"))
+    monkeypatch.setattr(sensor, "async_detect", detect)
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        detect.assert_awaited_once()
+        assert entry.data["capabilities"]["version"] == 2
+        assert entry.data["capabilities"]["outcome"] == "failed"
+        assert entry.data["capabilities"]["entities"] == record["entities"]
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_successful_redetection_persists_then_reloads_and_preserves_retained_ids(

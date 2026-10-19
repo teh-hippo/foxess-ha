@@ -385,8 +385,15 @@ async def test_sleep_does_not_relabel_old_period_energy(
 
 
 @pytest.mark.parametrize(
-    ("offset", "latency", "dispatch", "hours"),
-    [(0, 0, 0, 1), (70, 10, 5, 1), (179, 75, 5, 1), (0, 5, 5, 24)],
+    ("offset", "latency", "dispatch", "hours", "sample_interval"),
+    [
+        (0, 0, 0, 1, 180),
+        (70, 10, 5, 1, 180),
+        (179, 75, 5, 1, 180),
+        (0, 5, 5, 24, 180),
+        (0, 10, 5, 1, 270),
+        (0, 10, 5, 24, 270),
+    ],
 )
 async def test_healthy_cloud_timing_preserves_energy_and_call_budget(
     hass,
@@ -400,6 +407,7 @@ async def test_healthy_cloud_timing_preserves_energy_and_call_budget(
     latency,
     dispatch,
     hours,
+    sample_interval,
 ):
     freezer.move_to(dt_util.parse_datetime("2026-10-19T00:00:00Z") + timedelta(seconds=offset))
     monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
@@ -410,9 +418,11 @@ async def test_healthy_cloud_timing_preserves_energy_and_call_budget(
         requested = dt_util.utcnow()
         result = await original(*args, **kwargs)
         if args[2].endswith("/real/query"):
-            published = (int(requested.timestamp()) - 30) // 180 * 180
+            published = (int(requested.timestamp()) - 30) // sample_interval * sample_interval
             result[0]["time"] = dt_util.utc_from_timestamp(published).strftime("%Y-%m-%d %H:%M:%S %z")
         freezer.tick(timedelta(seconds=latency))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
         return result
 
     cloud_request.side_effect = respond
@@ -457,6 +467,67 @@ async def test_null_and_missing_reports_never_reset_energy(hass, cloud_request, 
     await polling.get_generation(hass, data, "example-key", "DEV1")
     assert data["report"] == {"loads": 0}
     assert data["reportDailyGeneration"] == {"month": 0, "cumulative": 100}
+
+
+@pytest.mark.parametrize(
+    ("start", "expected"),
+    [
+        ("2026-10-19T12:59:50Z", {}),
+        ("2026-10-31T12:59:50Z", {}),
+        ("2026-10-03T15:59:50Z", {"loads": 2.4}),
+    ],
+)
+async def test_report_uses_its_requested_local_day(hass, cloud_request, freezer, start, expected):
+    await hass.config.async_set_time_zone("Australia/Sydney")
+    freezer.move_to(start)
+    data = {"report": {"loads": 8}, "hasBattery": True}
+
+    async def respond(*args, **kwargs):
+        freezer.tick(timedelta(seconds=20))
+        return [{"variable": "loads", "values": [2.4] * 31}]
+
+    cloud_request.side_effect = respond
+    await polling.get_report(hass, data, "example-key", "DEV1")
+    assert data["report"] == expected
+
+
+async def test_slow_night_poll_cannot_republish_old_period_totals(
+    hass, setup_inverter, cloud_request, cloud_device, freezer
+):
+    await hass.config.async_set_time_zone("Australia/Sydney")
+    freezer.move_to("2026-10-31T12:59:30Z")
+    cloud_device["hasBattery"] = True
+    coordinator, _ = await setup_inverter()
+    coordinator.data["report"] = {"loads": 5}
+    original = cloud_request.side_effect
+
+    async def respond(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[2].endswith("/real/query"):
+            freezer.tick(timedelta(seconds=45))
+        return result
+
+    cloud_request.side_effect = respond
+    coordinator.next_raw = dt_util.utcnow()
+    await coordinator.async_refresh()
+    assert coordinator.data["online"]
+    assert coordinator.data["report"] == {}
+    assert "value" not in coordinator.data["reportDailyGeneration"]
+    assert "month" not in coordinator.data["reportDailyGeneration"]
+    assert coordinator.data["reportDailyGeneration"]["cumulative"] == 100
+
+
+async def test_explicit_percentage_power_factor_is_normalised(hass, cloud_request):
+    cloud_request.side_effect = None
+    cloud_request.return_value = [
+        {
+            "time": dt_util.utcnow().strftime("%Y-%m-%d %H:%M:%S %z"),
+            "datas": [{"variable": "PowerFactor", "value": 95, "unit": "%"}],
+        }
+    ]
+    data = {"hasBattery": True}
+    await polling.get_raw(hass, data, "example-key", "DEV1")
+    assert data["raw"]["PowerFactor"] == pytest.approx(0.95)
 
 
 @pytest.mark.parametrize(

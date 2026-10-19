@@ -40,7 +40,7 @@ If legacy entities remain after YAML was removed too early, restore the original
 
 ## Supported entities
 
-Initial setup and upgrade examine static metadata plus the preceding **48 hours** of cloud history.
+Initial setup and capability-policy upgrades examine static metadata plus the preceding **48 hours** of cloud history.
 Normal polling does not change the entity set.  To check changed wiring or hardware, open **Configure** and select
 **Re-detect supported entities**.
 
@@ -55,6 +55,8 @@ Normal polling does not change the entity set.  To check changed wiring or hardw
 | Power quality | Informative reactive-power or Power Factor readings, not zero-padding or a binary 0/1 profile |
 | Energy counters | Non-zero counter evidence, checked against activity in the corresponding power flow |
 | Diagnostics | Inverter metadata, Status, Running State, response time and real generation totals |
+
+Battery output alone does not establish solar activity.  Power Factor uses a unitless ratio; Home Assistant can display it as a percentage.
 
 Detection is a short-window heuristic, not proof of physical hardware.  A quiet or failed window retains unresolved capabilities
 rather than asserting that hardware is absent.  New entries without useful history retain a compatible selection and show a Repairs
@@ -162,6 +164,7 @@ Do not publish OpenAPI keys or unredacted config-entry files.
 
 Run `scripts/check.sh` with the project's locked `uv` environment.  It runs Ruff and the regression suite.
 CI additionally runs Hassfest and HACS validation.  Version fields are managed by semantic-release.
+Bump the capability record version when changing detection policy; failed or inconclusive re-detection must preserve the previous selection.
 
 ### GitHub-built prereleases
 

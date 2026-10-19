@@ -15,7 +15,6 @@ from homeassistant.const import (
     ATTR_DATE,
     ATTR_TIME,
     CONF_NAME,
-    PERCENTAGE,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
@@ -40,6 +39,7 @@ from .capabilities import (
     ESTIMATES,
     KNOWN_ENTITIES,
     RAW_ENTITIES,
+    VERSION,
     async_detect,
     compatible_entities,
     make_record,
@@ -368,8 +368,12 @@ async def async_prepare_entry(hass, entry):
     coordinator = FoxESSCoordinator(hass, entry, config)
     await coordinator.async_config_entry_first_refresh()
     record = entry.data.get(CONF_CAPABILITIES)
-    if not valid_record(record):
-        previous = compatible_entities(coordinator.data["addressbook"], extended=entry.options.get(CONF_EXTPV, False))
+    if not valid_record(record) or record["version"] != VERSION:
+        previous = (
+            set(record["entities"])
+            if valid_record(record)
+            else compatible_entities(coordinator.data["addressbook"], extended=entry.options.get(CONF_EXTPV, False))
+        )
         try:
             record = await async_detect(
                 hass,
@@ -653,7 +657,7 @@ class FoxESSReactivePower(FoxESSEntity):
 class FoxESSPowerFactor(FoxESSEntity):
     _attr_state_class: SensorStateClass = SensorStateClass.MEASUREMENT
     _attr_device_class = SensorDeviceClass.POWER_FACTOR
-    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_unit_of_measurement = None
 
     def __init__(self, coordinator, name, deviceID):
         super().__init__(coordinator=coordinator)
