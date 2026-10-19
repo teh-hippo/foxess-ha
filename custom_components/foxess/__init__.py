@@ -27,12 +27,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up FoxESS Cloud from a config entry."""
     hass.data.setdefault(DOMAIN, {})
-    if entry.data.get("yaml_import"):
-        registry = er.async_get(hass)
-        identities = {f"{entry.data[CONF_DEVICEID]}{suffix}" for suffix in KNOWN_ENTITIES}
-        for entity in list(registry.entities.values()):
-            if entity.platform == DOMAIN and entity.config_entry_id is None and entity.unique_id in identities:
-                registry.async_update_entity(entity.entity_id, config_entry_id=entry.entry_id)
+    registry = er.async_get(hass)
+    identities = {f"{entry.data[CONF_DEVICEID]}{suffix}" for suffix in KNOWN_ENTITIES}
+    for entity in list(registry.entities.values()):
+        if (
+            entity.platform == DOMAIN
+            and entity.domain == "sensor"
+            and entity.config_entry_id is None
+            and entity.unique_id in identities
+        ):
+            registry.async_update_entity(entity.entity_id, config_entry_id=entry.entry_id)
     entry.runtime_data = await async_prepare_entry(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))

@@ -53,11 +53,13 @@ class FoxESSEstimatedEnergy(IntegrationSensor):
     @property
     def available(self):
         source = er.async_get(self.hass).async_get(self._sensor_source_id)
+        state = self.hass.states.get(self._sensor_source_id)
         return (
             super().available
             and source is not None
             and source.disabled_by is None
-            and self.hass.states.get(self._sensor_source_id) is not None
+            and state is not None
+            and state.state != STATE_UNAVAILABLE
         )
 
     @property

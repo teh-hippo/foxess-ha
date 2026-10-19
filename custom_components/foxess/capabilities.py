@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from .api import async_request, number, sample_timestamp
 
-VERSION = 1
+VERSION = 2
 CORE = {
     "Inverter",
     "status",
@@ -109,7 +109,8 @@ def compatible_entities(details: dict, *, extended: bool = False) -> set[str]:
 def valid_record(record: Any) -> bool:
     return (
         isinstance(record, dict)
-        and record.get("version") == VERSION
+        and type(record.get("version")) is int
+        and 1 <= record["version"] <= VERSION
         and isinstance(record.get("entities"), list)
         and all(isinstance(key, str) and key in KNOWN_ENTITIES for key in record["entities"])
         and CORE <= set(record["entities"])
@@ -147,7 +148,8 @@ def select_capabilities(
     if not awake:
         return make_record(selected, "inconclusive", {"history": "no usable operating samples"})
 
-    solar_awake = any(active(key) for key in ("generationPower", "pvPower"))
+    battery = battery_support(details)
+    solar_awake = active("pvPower") or (battery is False and active("generationPower"))
     for n in range(1, 19):
         samples = values(f"pv{n}Volt")
         choose(
@@ -170,7 +172,10 @@ def select_capabilities(
         ("boost-temperature", "boostTemperation"),
         ("inv-temperature", "invTemperation"),
     ):
-        choose({key}, active(variable) if values(variable) else None, "informative observed series")
+        support = active(variable) if values(variable) else None
+        if key == "pv-power" and details.get("hasPV") is True and not solar_awake:
+            support = None
+        choose({key}, support, "informative observed series")
     grid = ("gridConsumptionPower", "feedinPower")
     choose(
         {"grid-consumption-power", "feedIn-power"},
@@ -178,11 +183,12 @@ def select_capabilities(
         "observed grid exchange in either direction",
     )
     pf, reactive = values("PowerFactor"), values("ReactivePower")
+    if "PowerFactor" in series and series["PowerFactor"].unit == "%":
+        pf = [value / 100 for value in pf]
     quality = None
     if pf and reactive:
         quality = any(value != 0 for value in reactive) or bool(set(pf) - {0, 1}) or set(pf) == {1}
     choose({"power-factor", "reactive-power"}, quality, "informative power-quality group")
-    battery = battery_support(details)
     choose(BATTERY, battery, "static battery metadata")
     if battery is True:
         for suffix in ("bat-temperature", "bat-temperature2"):

@@ -125,7 +125,6 @@ class FoxESSConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_DEVICEID: user_input[CONF_DEVICEID],
                 CONF_NAME: name,
                 CONF_HAS_BATTERY: user_input.get(CONF_HAS_BATTERY),
-                "yaml_import": True,
             },
             options={
                 key: user_input[key]

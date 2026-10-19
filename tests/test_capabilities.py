@@ -89,6 +89,23 @@ def test_battery_three_phase_and_valid_power_factor_survive(observed_series, pf)
     assert battery_support({"hasBattery": False, "batteryList": [{"batterySN": "EXAMPLE"}]}) is None
 
 
+def test_battery_output_is_not_evidence_of_solar_activity(observed_series):
+    details = {"hasBattery": True, "hasPV": True}
+    for variable in observed_series:
+        if variable.startswith("pv"):
+            observed_series[variable].values = {"first": 0, "second": 0}
+    observed_series["SoC"].values = {"first": 50, "second": 49}
+    record = select_capabilities(details, observed_series, compatible_entities(details), {})
+    assert {"pv-power", "pv1-current", "pv1-volt", "pv1-power"} <= set(record["entities"])
+
+
+def test_binary_percentage_power_factor_is_not_an_informative_profile(observed_series):
+    observed_series["PowerFactor"] = Series("%", {"first": 0, "second": 100})
+    details = {"hasBattery": True}
+    record = select_capabilities(details, observed_series, compatible_entities(details), {})
+    assert not {"power-factor", "reactive-power"} & set(record["entities"])
+
+
 async def test_history_windows_and_failure_are_not_successful_empty_detection(hass, cloud_request):
     calls = []
 

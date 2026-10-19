@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from homeassistant.helpers import entity_registry as er
 
+from custom_components.foxess.capabilities import BATTERY, CORE, make_record
 from custom_components.foxess.coordinator import _solar_elevation
 from custom_components.foxess.sensor import (
     FoxESSEnergyGenerated,
@@ -197,6 +198,27 @@ async def test_cached_ticks_are_not_integral_samples(hass, energy_entry, freezer
     assert hass.states.get(estimate).state == "unknown"
 
 
+async def test_restored_estimate_is_unavailable_when_its_source_starts_unavailable(
+    hass, energy_entry, cloud_device, freezer
+):
+    source, estimate = _energy_ids(hass)
+    freezer.tick(timedelta(minutes=3))
+    hass.states.async_set(source, "1", {"device_class": "power", "unit_of_measurement": "kW"})
+    await hass.async_block_till_done()
+    total = hass.states.get(estimate).state
+    assert float(total) > 0
+    cloud_device.update(hasBattery=True, status=3)
+    hass.config_entries.async_update_entry(energy_entry, options={"wake_grace_minutes": 0})
+    await hass.async_block_till_done()
+    assert hass.states.get(source).state == "unavailable"
+    assert hass.states.get(estimate).state == "unavailable"
+    cloud_device["status"] = 1
+    freezer.tick(timedelta(minutes=3))
+    await energy_entry.runtime_data[0].coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(estimate).state == total
+
+
 async def test_estimate_normalises_configured_power_units(hass, energy_entry, freezer):
     source, estimate = _energy_ids(hass)
     for _ in range(2):
@@ -205,3 +227,110 @@ async def test_estimate_normalises_configured_power_units(hass, energy_entry, fr
         await hass.async_block_till_done()
     assert hass.states.get(estimate).attributes["unit_of_measurement"] == "kWh"
     assert float(hass.states.get(estimate).state) == pytest.approx(0.1)
+
+
+async def test_power_factor_ratio_renders_correctly_as_percentage(hass, inverter_entry, cloud_request, monkeypatch):
+    from custom_components.foxess import coordinator as polling
+
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: 15)
+    registry = er.async_get(hass)
+    entity = registry.async_get_or_create("sensor", "foxess", "LEGACYpower-factor", config_entry=inverter_entry)
+    registry.async_update_entity_options(entity.entity_id, "sensor", {"unit_of_measurement": "%"})
+    record = make_record(CORE | {"power-factor"}, "complete", {})
+    hass.config_entries.async_update_entry(inverter_entry, data={**inverter_entry.data, "capabilities": record})
+    assert await hass.config_entries.async_setup(inverter_entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        state = hass.states.get(entity.entity_id)
+        assert state.attributes["unit_of_measurement"] == "%"
+        assert float(state.state) == pytest.approx(95)
+    finally:
+        await hass.config_entries.async_unload(inverter_entry.entry_id)
+
+
+async def test_dual_battery_entities_work_at_night_and_offline_is_not_sleep(
+    hass, inverter_entry, cloud_request, cloud_device, monkeypatch, freezer
+):
+    from custom_components.foxess import coordinator as polling
+
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: -10)
+    cloud_device.update(hasBattery=True, batteryList=[{"batterySN": "EXAMPLE1"}, {"batterySN": "EXAMPLE2"}])
+    original = cloud_request.side_effect
+    values = {
+        "pvPower": 0,
+        "generationPower": 1.2,
+        "loadsPower": 1,
+        "feedinPower": 0.2,
+        "gridConsumptionPower": 0,
+        "SoC": 55,
+        "SoC_1": 50,
+        "SoC_2": 60,
+        "batTemperature_1": 22,
+        "batTemperature_2": 23,
+        "invBatPower_1": 1,
+        "invBatPower_2": 0.2,
+        "batChargePower": 0,
+        "batDischargePower": 1.2,
+        "energyThroughput": 20.1,
+    }
+
+    async def respond(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[2].endswith("/real/query") and cloud_device["status"] != 3:
+            result[0]["datas"] = [{"variable": key, "value": value} for key, value in values.items()]
+            result[0]["datas"].append({"variable": "ResidualEnergy", "value": 50, "unit": "0.1kWh"})
+        elif args[2].endswith("/report/query"):
+            return [
+                {"variable": "chargeEnergyToTal", "values": [0] * 31},
+                {"variable": "dischargeEnergyToTal", "values": [1.2] * 31},
+            ]
+        return result
+
+    cloud_request.side_effect = respond
+    record = make_record(CORE | BATTERY | {"bat-charge", "bat-discharge"}, "complete", {})
+    hass.config_entries.async_update_entry(inverter_entry, data={**inverter_entry.data, "capabilities": record})
+    assert await hass.config_entries.async_setup(inverter_entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        registry = er.async_get(hass)
+
+        def state(suffix):
+            return hass.states.get(registry.async_get_entity_id("sensor", "foxess", "LEGACY" + suffix)).state
+
+        for suffix, expected in {
+            "bat-soc": 55,
+            "bat-soc1": 50,
+            "bat-soc2": 60,
+            "bat-temperature": 22,
+            "bat-temperature2": 23,
+            "inv-Bat-Power": 1,
+            "inv-Bat-Power2": 0.2,
+            "bat-charge-power": 0,
+            "bat-discharge-power": 1.2,
+            "bat-minsoc": 10,
+            "bat-minSocOnGrid": 20,
+            "bat-charge": 0,
+            "bat-discharge": 1.2,
+            "residual-energy": 5,
+        }.items():
+            assert float(state(suffix)) == pytest.approx(expected), suffix
+        assert state("status") == "online"
+        coordinator = inverter_entry.runtime_data[0].coordinator
+        before = cloud_request.await_count
+        freezer.tick(timedelta(minutes=3))
+        await coordinator.async_refresh()
+        assert cloud_request.await_count > before
+        cloud_device["status"] = 3
+        freezer.tick(timedelta(minutes=3))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert state("status") == "offline"
+        assert state("bat-soc") == "unknown"
+        freezer.tick(timedelta(minutes=60))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert state("status") == "offline"
+        assert state("bat-soc") == "unavailable"
+        assert not list(inverter_entry.async_get_active_flows(hass, {"reauth"}))
+    finally:
+        await hass.config_entries.async_unload(inverter_entry.entry_id)

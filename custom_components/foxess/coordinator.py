@@ -298,9 +298,13 @@ class FoxESSCoordinator(DataUpdateCoordinator[dict]):
                     if data["online"]:
                         # Reserve the full request timeout plus dispatch time before expiry.
                         deadline = data["last_cloud_sync"] + RAW_MAX_AGE - timedelta(seconds=DEFAULT_TIMEOUT + 15)
-                        self.next_raw = (
-                            min(self.next_raw, deadline) if deadline > completed else completed + SCAN_INTERVAL
-                        )
+                        if deadline > completed:
+                            self.next_raw = min(self.next_raw, deadline)
+                        else:
+                            remaining = (data["last_cloud_sync"] + RAW_MAX_AGE - completed).total_seconds()
+                            self.next_raw = completed + timedelta(
+                                seconds=max(1, min(SCAN_INTERVAL.total_seconds(), remaining / 2))
+                            )
                         if not previously_online:
                             self.next_auxiliary["reportDailyGeneration"] = completed
                     self._schedule_freshness()
@@ -342,6 +346,7 @@ class FoxESSCoordinator(DataUpdateCoordinator[dict]):
                             self._record_failure(err, now)
                             break
                     self.next_auxiliary[section] = dt_util.utcnow() + timedelta(minutes=minutes)
+        self._expire_periods(dt_util.utcnow())
         self._update_status(dt_util.utcnow())
         delay = max(1, (self.next_raw - dt_util.utcnow()).total_seconds())
         self.update_interval = timedelta(seconds=min(60, delay)) if not offload else SCAN_INTERVAL
@@ -382,6 +387,10 @@ async def get_report(hass, data, api_key, serial):
     )
     if not isinstance(result, list):
         raise UpdateFailed("FoxESS returned an invalid energy report")
+    if dt_util.now().date() != now.date():
+        _LOGGER.debug("Discarding FoxESS energy report requested for the previous local day")
+        data["report"] = {}
+        return
     report = {}
     for item in result:
         if (
@@ -458,6 +467,8 @@ async def get_raw(hass, data, api_key, serial):
                 _LOGGER.warning("FoxESS returned an unsupported ResidualEnergy unit")
                 continue
             value = round(value * scale, 3)
+        elif variable == "PowerFactor" and item.get("unit") == "%":
+            value /= 100
         raw[variable] = value
     if dt_util.utcnow() - sample_time >= RAW_MAX_AGE:
         data["online"] = False
