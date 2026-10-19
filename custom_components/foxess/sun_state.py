@@ -17,14 +17,14 @@ def expected_online(elevation_now: float, wake_elevation: float) -> bool:
     return elevation_now >= wake_elevation
 
 
-def operational_state(online: bool, pv_only: bool, is_expected_online: bool) -> str:
+def operational_state(online: bool, pv_only: bool, is_expected_online: bool, *, in_grace: bool = False) -> str:
     """Map raw online state + PV/battery + sun expectation to a categorised state."""
     if online:
         return ONLINE
     if not pv_only:
         # Battery inverters should stay online 24/7; offline is never benign.
         return OFFLINE
-    return OFFLINE if is_expected_online else ASLEEP
+    return OFFLINE if is_expected_online and not in_grace else ASLEEP
 
 
 def should_offload(

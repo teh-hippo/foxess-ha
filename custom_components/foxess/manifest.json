@@ -1,6 +1,7 @@
 {
   "domain": "foxess",
   "name": "FoxESS Cloud",
+  "after_dependencies": ["integration"],
   "codeowners": ["@teh-hippo"],
   "config_flow": true,
   "documentation": "https://github.com/teh-hippo/foxess-ha",

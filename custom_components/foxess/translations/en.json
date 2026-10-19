@@ -27,7 +27,8 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "yaml_in_use": "This integration is configured via YAML. Keep its deviceID unchanged to preserve entity history; do not add it again through the UI.",
+      "yaml_in_use": "Legacy FoxESS entities need migration.  Restart with the existing FoxESS YAML block intact so it can be imported with its original deviceID.  Remove the YAML block after the imported integration is working.",
+      "identity_conflict": "This serial number already has a different deviceID.  Do not create another entry or change IDs; resolve the duplicate configuration before importing YAML.",
       "reauth_successful": "The API key was updated successfully."
     }
   },
@@ -35,16 +36,22 @@
     "step": {
       "init": {
         "data": {
-          "extendPV": "More than 6 PV strings",
           "Evo": "Evo series inverter",
+          "redetect": "Re-detect supported entities",
           "wake_elevation": "Wake solar elevation (degrees)",
           "wake_grace_minutes": "Wake grace period (minutes)"
         },
         "data_description": {
+          "redetect": "Check the preceding 48 hours.  Unsupported entities are removed only after successful detection; retained identities and statistics are preserved.",
           "wake_elevation": "Solar elevation above which a PV-only inverter is expected to be online; below this it sleeps without raising an issue.",
           "wake_grace_minutes": "One continuous daylight allowance for missing data after the sun reaches the wake elevation. An unfinished timer resets overnight; existing warnings remain until fresh data returns."
         }
       }
+    },
+    "error": {
+      "detection_inconclusive": "No useful operating history was available.  Existing capabilities were kept.  Try again after the inverter has reported while operating.",
+      "invalid_auth": "FoxESS rejected the API key.  Reauthenticate the existing integration.",
+      "cannot_connect": "Capability detection failed.  Existing capabilities were kept; check FoxESS Cloud and try again."
     }
   },
   "entity": {
@@ -59,6 +66,18 @@
     }
   },
   "issues": {
+    "yaml_migration": {
+      "title": "Remove imported FoxESS YAML configuration",
+      "description": "FoxESS YAML no longer creates sensors.  It is imported into Settings > Devices & services using the existing deviceID to preserve entity identities.\n\nConfirm the imported FoxESS entry is working, then remove only its old sensor platform block and restart Home Assistant.  Do not edit deviceID or create a second entry.  If import failed, leave the block intact and resolve the setup error first."
+    },
+    "capabilities_inconclusive": {
+      "title": "FoxESS entity detection needs operating history",
+      "description": "Entity detection could not reach a complete decision.  The previous or compatible entity selection was retained; an empty response or failed request was not treated as missing hardware.\n\nAfter the inverter has reported while operating, open Configure and select Re-detect supported entities."
+    },
+    "capabilities_changed": {
+      "title": "FoxESS battery metadata changed",
+      "description": "Current metadata no longer confirms a solar-only installation.  Night monitoring will continue, but the entity selection has not been changed.  Open Configure and select Re-detect supported entities to check the installation."
+    },
     "data_unavailable": {
       "title": "FoxESS data missing during expected daylight for {device_sn}",
       "description": "No fresh readings were available from **{device_sn}** for {grace} minutes while the sun was at or above {elevation} degrees. Normal overnight shutdown does not count towards this allowance.\n\nThis warning remains until fresh readings return, including overnight. Check the inverter, datalogger connectivity and FoxESS Cloud availability."

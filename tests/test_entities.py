@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 
+from custom_components.foxess.coordinator import _solar_elevation
 from custom_components.foxess.sensor import (
     FoxESSEnergyGenerated,
     FoxESSEnergySolar,
     FoxESSInverter,
     FoxESSSolarPower,
     FoxESSStatus,
-    _solar_elevation,
 )
 
 SYD = ZoneInfo("Australia/Sydney")
@@ -40,15 +42,10 @@ def test_status_options_are_the_enum_set() -> None:
     assert entity._attr_options == ["online", "asleep", "offline"]
 
 
-def test_energy_solar_returns_none_when_offline() -> None:
-    # The fix: never emit a synthetic 0 on a TOTAL_INCREASING sensor while offline.
-    entity = _entity(FoxESSEnergySolar, {"online": False, "report": {}})
-    assert entity.native_value is None
-
-
-def test_energy_solar_computes_value_when_online() -> None:
+@pytest.mark.parametrize("entity_type", [FoxESSEnergySolar, FoxESSSolarPower])
+def test_retired_formulas_do_not_claim_reported_generation(entity_type) -> None:
     entity = _entity(
-        FoxESSEnergySolar,
+        entity_type,
         {
             "online": True,
             "report": {
@@ -58,33 +55,26 @@ def test_energy_solar_computes_value_when_online() -> None:
                 "gridConsumption": 1,
                 "dischargeEnergyToTal": 0,
             },
+            "raw": {
+                "loadsPower": 5,
+                "batChargePower": 0,
+                "feedinPower": 2,
+                "gridConsumptionPower": 1,
+                "batDischargePower": 0,
+            },
         },
     )
-    # loads + charge + feedin - grid - discharge = 5 + 0 + 2 - 1 - 0 = 6
-    assert entity.native_value == 6.0
-
-
-def test_solar_power_returns_none_when_offline() -> None:
-    entity = _entity(FoxESSSolarPower, {"online": False, "raw": {}})
     assert entity.native_value is None
-
-
-@pytest.mark.parametrize("entity_type", [FoxESSEnergySolar, FoxESSSolarPower])
-def test_missing_inputs_are_not_zero(entity_type) -> None:
-    entity = _entity(entity_type, {"online": True, "raw": {}, "report": {}, "hasBattery": False})
-    assert entity.native_value is None
-
-
-@pytest.mark.parametrize("battery", [False, True, None])
-def test_missing_battery_terms_require_confirmed_absence(battery) -> None:
-    data = {"online": True, "hasBattery": battery, "report": {"loads": 5, "feedin": 2, "gridConsumption": 1}}
-    assert _entity(FoxESSEnergySolar, data).native_value == (6 if battery is False else None)
 
 
 def test_inverter_attributes_before_detail_and_during_sleep() -> None:
     entity = _entity(FoxESSInverter, {"online": False, "addressbook": {}})
     assert entity.native_value is None
-    assert entity.extra_state_attributes == {"lastCloudSync": None}
+    assert entity.extra_state_attributes == {
+        "lastCloudSync": None,
+        "lastCloudSuccess": None,
+        "capabilityDetection": None,
+    }
     timestamp = datetime(2026, 9, 7, 12, tzinfo=ZoneInfo("UTC"))
     entity.coordinator.data.update(addressbook={"status": 3}, last_cloud_sync=timestamp)
     assert entity.native_value == "off-line"
@@ -127,3 +117,91 @@ async def test_solar_elevation_is_dst_safe(hass, caplog) -> None:
     assert not any(
         record.name == "homeassistant.helpers.sun" and "deprecated" in record.getMessage() for record in caplog.records
     )
+
+
+def _energy_ids(hass):
+    registry = er.async_get(hass)
+    return (
+        registry.async_get_entity_id("sensor", "foxess", "LEGACYload-power"),
+        registry.async_get_entity_id("sensor", "foxess", "LEGACYestimated-load"),
+    )
+
+
+async def test_native_energy_skips_gaps_and_negative_readings(hass, energy_entry, freezer):
+    source, estimate = _energy_ids(hass)
+    attributes = {"device_class": "power", "unit_of_measurement": "kW"}
+
+    async def report(value, minutes=3):
+        freezer.tick(timedelta(minutes=minutes))
+        hass.states.async_set(source, value, attributes)
+        await hass.async_block_till_done()
+
+    await report("1")
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.05)
+    await report("unknown")
+    await report("2", minutes=720)
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.05)
+    await report("2")
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.15)
+    await report("-1")
+    assert hass.states.get(source).state == "-1"
+    assert hass.states.get(estimate).attributes["invalid_source_reading"]
+    await report("2")
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.15)
+    await report("2")
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("power", [0, 1])
+async def test_estimate_restores_positive_and_real_zero_without_restart_energy(hass, energy_entry, freezer, power):
+    source, estimate = _energy_ids(hass)
+    attributes = {"device_class": "power", "unit_of_measurement": "kW"}
+    hass.states.async_set(source, str(power), attributes)
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(minutes=3))
+    hass.states.async_set(source, str(power), attributes)
+    await hass.async_block_till_done()
+    total = hass.states.get(estimate).state
+    assert Decimal(total) == Decimal(str(power)) / 20
+    await hass.config_entries.async_unload(energy_entry.entry_id)
+    freezer.tick(timedelta(hours=12))
+    assert await hass.config_entries.async_setup(energy_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(estimate).state == total
+    assert len(hass.config_entries.async_entries("integration")) == 0
+    assert er.async_get(hass).async_get(source).device_id == er.async_get(hass).async_get(estimate).device_id
+
+
+async def test_estimate_tracks_source_rename_disable_and_removal(hass, energy_entry, freezer):
+    source, estimate = _energy_ids(hass)
+    registry = er.async_get(hass)
+    registry.async_update_entity(source, new_entity_id="sensor.renamed_house_power")
+    await hass.async_block_till_done()
+    assert hass.states.get(estimate).attributes["source"] == "sensor.renamed_house_power"
+    registry.async_update_entity("sensor.renamed_house_power", disabled_by=er.RegistryEntryDisabler.USER)
+    await hass.async_block_till_done()
+    assert hass.states.get(estimate).state == "unavailable"
+    registry.async_remove("sensor.renamed_house_power")
+    await hass.async_block_till_done()
+    assert hass.states.get(estimate).state == "unavailable"
+
+
+async def test_cached_ticks_are_not_integral_samples(hass, energy_entry, freezer):
+    source, estimate = _energy_ids(hass)
+    coordinator = energy_entry.runtime_data[0].coordinator
+    reported = hass.states.get(source).last_reported
+    freezer.tick(timedelta(minutes=1))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(source).last_reported == reported
+    assert hass.states.get(estimate).state == "unknown"
+
+
+async def test_estimate_normalises_configured_power_units(hass, energy_entry, freezer):
+    source, estimate = _energy_ids(hass)
+    for _ in range(2):
+        freezer.tick(timedelta(minutes=3))
+        hass.states.async_set(source, "1000", {"device_class": "power", "unit_of_measurement": "W"})
+        await hass.async_block_till_done()
+    assert hass.states.get(estimate).attributes["unit_of_measurement"] == "kWh"
+    assert float(hass.states.get(estimate).state) == pytest.approx(0.1)
