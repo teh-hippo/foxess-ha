@@ -6,10 +6,27 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact branch commit SHA; required when building a prerelease
+        type: string
+        default: ''
+      version:
+        description: Optional prerelease version, for example 3.0.0-rc.1.capabilities
+        type: string
+        default: ''
+      publish:
+        description: Publish the verified prerelease instead of uploading build artifacts only
+        type: boolean
+        default: false
+      release_notes:
+        description: Approved public release notes; required when publishing
+        type: string
+        default: ''
 
 concurrency:
-  group: validate-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: validate-${{ github.head_ref || github.ref }}-${{ inputs.version || 'checks' }}
+  cancel-in-progress: ${{ !inputs.version }}
 
 permissions:
   contents: read
@@ -20,6 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
       - uses: home-assistant/actions/hassfest@f6f29a7ee3fa0eccadf3620a7b9ee00ab54ec03b  # master pinned 2026-05-06
 
   hacs:
@@ -27,6 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
       - uses: hacs/action@dcb30e72781db3f207d5236b861172774ab0b485  # main pinned 2026-05-06
         with:
           category: integration
@@ -40,6 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           python-version: "3.14"
@@ -52,8 +78,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           python-version: "3.14"
       - run: uv sync --locked
       - run: uv run --no-sync pytest tests/ -v --cov=custom_components.foxess.sun_state --cov-report=term-missing --cov-fail-under=90
+
+  prerelease:
+    name: Prerelease
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+    needs: [hassfest, hacs, lint, test]
+    permissions:
+      contents: write
+    uses: teh-hippo/common-repo-configs/.github/workflows/ha-prerelease.yml@dcbcf109fcc32810715abbeaf88397eb33cde633 # v3.3.0
+    with:
+      integration: foxess
+      target_sha: ${{ inputs.target_sha }}
+      version: ${{ inputs.version }}
+      publish: ${{ inputs.publish }}
+      release_notes: ${{ inputs.release_notes }}

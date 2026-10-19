@@ -162,3 +162,27 @@ Do not publish OpenAPI keys or unredacted config-entry files.
 
 Run `scripts/check.sh` with the project's locked `uv` environment.  It runs Ruff and the regression suite.
 CI additionally runs Hassfest and HACS validation.  Version fields are managed by semantic-release.
+
+### GitHub-built prereleases
+
+The **Validate** workflow can build a selected branch's exact commit through the
+[shared HA prerelease workflow](https://github.com/teh-hippo/common-repo-configs/blob/main/.github/workflows/ha-prerelease.yml).
+Hassfest, HACS, Ruff and regression checks must pass for that same commit before packaging.
+
+```bash
+gh workflow run validate.yml --repo teh-hippo/foxess-ha \
+  --ref feat/device-capabilities \
+  -f target_sha=FULL_COMMIT_SHA \
+  -f version=3.0.0-rc.1.capabilities \
+  -f publish=false
+```
+
+For publication, set `publish=true` and supply the reviewed public text in `release_notes`.
+Publication creates an immutable prerelease tag without replacing a release or changing `latest`.
+The ZIP, SHA-256 checksum and build metadata identify the exact source commit and GitHub run.
+Custom suffixes remain in the release tag and metadata; the packaged manifest uses HA-compatible `3.0.0rc1`.
+Source version fields are not changed by prerelease builds.
+
+Install the attached **foxess.zip**, not GitHub's automatically generated source archive.  Verify its checksum and back up the installed integration first.
+These artifact-only prereleases are installed manually; this does not change the existing stable HACS download process.
+Restart Home Assistant separately when ready to load the new code.
