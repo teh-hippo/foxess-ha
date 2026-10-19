@@ -162,6 +162,45 @@ async def async_request(
     return result, elapsed_ms
 
 
+async def async_energy_report(
+    hass: HomeAssistant, api_key: str, serial: str, year: int, month: int
+) -> dict[str, list[Any]]:
+    """Fetch daily energy values without discarding other days in the requested month."""
+    result, _ = await async_request(
+        hass,
+        "POST",
+        "/op/v0/device/report/query",
+        api_key,
+        payload={
+            "sn": serial,
+            "year": year,
+            "month": month,
+            "dimension": "month",
+            "variables": [
+                "feedin",
+                "generation",
+                "gridConsumption",
+                "chargeEnergyToTal",
+                "dischargeEnergyToTal",
+                "loads",
+                "PVEnergyTotal",
+            ],
+        },
+    )
+    if not isinstance(result, list):
+        raise UpdateFailed("FoxESS returned an invalid energy report")
+    report = {}
+    for item in result:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("variable"), str)
+            or not isinstance(item.get("values"), list)
+        ):
+            raise UpdateFailed("FoxESS returned an invalid energy report item")
+        report[item["variable"]] = item["values"]
+    return report
+
+
 def validate_device(result: Any, device_sn: str) -> dict[str, Any]:
     """Validate identity and the capabilities required before entity creation."""
     if not isinstance(result, dict):

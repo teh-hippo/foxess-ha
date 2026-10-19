@@ -381,7 +381,6 @@ async def async_prepare_entry(hass, entry):
                 config[CONF_DEVICESN],
                 coordinator.data["addressbook"],
                 previous,
-                coordinator.data["report"],
             )
         except (UpdateFailed, ConfigEntryAuthFailed) as err:
             _LOGGER.warning("FoxESS capability detection failed; retaining compatible entities: %s", err)
@@ -462,7 +461,12 @@ class FoxESSEntity(CoordinatorEntity, SensorEntity):
         )
 
     def _sample_token(self):
-        return (self.coordinator.data.get("last_cloud_sync"), self.coordinator.data["online"], self.available)
+        return (
+            self.coordinator.data.get("last_cloud_sync"),
+            self.coordinator.data["online"],
+            bool(self.coordinator.data.get("raw")),
+            self.available,
+        )
 
     def _handle_coordinator_update(self):
         token = self._sample_token()

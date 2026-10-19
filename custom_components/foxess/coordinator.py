@@ -20,6 +20,7 @@ from .api import (
     DeviceOffline,
     RateLimited,
     async_device_details,
+    async_energy_report,
     async_request,
     number,
     sample_timestamp,
@@ -364,44 +365,16 @@ async def get_battery_settings(hass, data, api_key, serial):
 
 async def get_report(hass, data, api_key, serial):
     now = dt_util.now()
-    result, _ = await async_request(
-        hass,
-        "POST",
-        "/op/v0/device/report/query",
-        api_key,
-        payload={
-            "sn": serial,
-            "year": now.year,
-            "month": now.month,
-            "dimension": "month",
-            "variables": [
-                "feedin",
-                "generation",
-                "gridConsumption",
-                "chargeEnergyToTal",
-                "dischargeEnergyToTal",
-                "loads",
-                "PVEnergyTotal",
-            ],
-        },
-    )
-    if not isinstance(result, list):
-        raise UpdateFailed("FoxESS returned an invalid energy report")
+    result = await async_energy_report(hass, api_key, serial, now.year, now.month)
     if dt_util.now().date() != now.date():
         _LOGGER.debug("Discarding FoxESS energy report requested for the previous local day")
         data["report"] = {}
         return
     report = {}
-    for item in result:
-        if (
-            not isinstance(item, dict)
-            or not isinstance(item.get("variable"), str)
-            or not isinstance(item.get("values"), list)
-        ):
-            raise UpdateFailed("FoxESS returned an invalid energy report item")
-        value = number(item["values"][now.day - 1]) if len(item["values"]) >= now.day else None
+    for variable, values in result.items():
+        value = number(values[now.day - 1]) if len(values) >= now.day else None
         if value is not None:
-            report[item["variable"]] = round(value, 3)
+            report[variable] = round(value, 3)
     data["report"] = report
 
 
