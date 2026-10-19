@@ -248,6 +248,36 @@ async def test_power_factor_ratio_renders_correctly_as_percentage(hass, inverter
         await hass.config_entries.async_unload(inverter_entry.entry_id)
 
 
+async def test_first_night_setup_keeps_real_cumulative_energy_without_live_zeroes(
+    hass, inverter_entry, cloud_request, cloud_device, monkeypatch, freezer
+):
+    from custom_components.foxess import coordinator as polling
+
+    cloud_device.update(status=3, hasBattery=False)
+    monkeypatch.setattr(polling, "_solar_elevation", lambda hass, when: -10)
+    assert await hass.config_entries.async_setup(inverter_entry.entry_id)
+    try:
+        await hass.async_block_till_done()
+        registry = er.async_get(hass)
+
+        def state(suffix):
+            return hass.states.get(registry.async_get_entity_id("sensor", "foxess", "LEGACY" + suffix)).state
+
+        assert state("status") == "asleep"
+        assert state("load-power") == "unknown"
+        assert state("running-state") == "unknown"
+        assert state("energy-generated") == "unknown"
+        assert float(state("energy-generated-cumulative")) == 100
+        cloud_request.reset_mock()
+        freezer.tick(timedelta(hours=1))
+        await inverter_entry.runtime_data[0].coordinator.async_refresh()
+        cloud_request.assert_not_awaited()
+        assert state("status") == "asleep"
+        assert float(state("energy-generated-cumulative")) == 100
+    finally:
+        await hass.config_entries.async_unload(inverter_entry.entry_id)
+
+
 async def test_dual_battery_entities_work_at_night_and_offline_is_not_sleep(
     hass, inverter_entry, cloud_request, cloud_device, monkeypatch, freezer
 ):
