@@ -14,7 +14,7 @@ jobs:
   release:
     name: Semantic Release
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
     permissions:
       contents: write
       id-token: write
@@ -24,56 +24,72 @@ jobs:
       version: ${{ steps.semantic_release.outputs.version }}
       tag: ${{ steps.semantic_release.outputs.tag }}
       sha: ${{ steps.semantic_release.outputs.commit_sha }}
+      release_notes: ${{ steps.semantic_release.outputs.release_notes }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
 
+      - name: Check the validated commit is still current
+        id: validated
+        env:
+          VALIDATED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" = "$VALIDATED_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Validated commit was superseded; waiting for validation of the new branch head."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Exclude build prereleases from stable history
+        if: ${{ steps.validated.outputs.current == 'true' }}
+        run: |
+          python - <<'PY'
+          import re
+          import subprocess
+
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          prereleases = [tag for tag in tags if re.match(r"v\d+\.\d+\.\d+-", tag)]
+          if prereleases:
+              # Only the runner's local tags change; published prereleases remain untouched.
+              subprocess.run(["git", "tag", "--delete", "--", *prereleases], check=True)
+          PY
 
       - name: Python Semantic Release
         id: semantic_release
+        if: ${{ steps.validated.outputs.current == 'true' }}
         uses: python-semantic-release/python-semantic-release@37a30a7987cfebb6d49240bf1c4e9cd9817d0673 # v10
         with:
           github_token: ${{ secrets.RELEASE_TOKEN }}
+          vcs_release: false
 
-  package:
-    name: Package stable HACS release
+  publish:
+    name: Publish verified stable HACS release
     needs: release
     if: ${{ needs.release.outputs.released == 'true' && needs.release.outputs.is_prerelease == 'false' }}
     permissions:
       contents: write
-    uses: teh-hippo/common-repo-configs/.github/workflows/ha-prerelease.yml@2485d1fee6af1e1282dddc0ad7bf78e6efb92e43 # v3.3.1
+    uses: teh-hippo/common-repo-configs/.github/workflows/ha-prerelease.yml@b931aca4b15cb636891d2037f3cc9b7bfd33e2c3 # v3.4.0
     with:
       integration: foxess
       target_sha: ${{ needs.release.outputs.sha }}
       version: ${{ needs.release.outputs.version }}
-      publish: false
+      publish: true
+      release_notes: ${{ needs.release.outputs.release_notes }}
 
-  upload:
-    name: Upload stable HACS assets
-    needs: [release, package]
+  latest_alias:
+    name: Update legacy latest alias
+    needs: [release, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: ${{ needs.package.outputs.artifact_name }}
-          path: dist
-
-      - name: Attach verified integration archive
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
-        with:
-          tag_name: ${{ needs.release.outputs.tag }}
-          files: |
-            dist/foxess.zip
-            dist/foxess.zip.sha256
-            dist/foxess.build.json
-          fail_on_unmatched_files: true
-          overwrite_files: false
-
       - name: Create/Update latest GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
@@ -82,6 +98,7 @@ jobs:
           target_commitish: ${{ needs.release.outputs.sha }}
           generate_release_notes: false
           prerelease: false
+          make_latest: "false"
           overwrite_files: true
           body: |
             Alias release for tooling that resolves by `latest`.
